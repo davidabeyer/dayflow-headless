@@ -41,6 +41,7 @@ struct MainView: View {
         let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"; return fmt.string(from: Date())
     }()
     @State private var showCategoryEditor = false
+    @State private var showEditCategories = false
 
     private static let maxDateTitleWidth: CGFloat = {
         let referenceText = "Today, Sep 30"
@@ -214,9 +215,58 @@ struct MainView: View {
                                     activity: selectedActivity,
                                     maxHeight: geo.size.height,
                                     scrollSummary: true,
-                                    hasAnyActivities: hasAnyActivities
+                                    hasAnyActivities: hasAnyActivities,
+                                    onCategorySwap: { showEditCategories = true }
                                 )
                                 .opacity(contentOpacity)
+                                .overlay {
+                                    if showEditCategories, let activity = selectedActivity {
+                                        ZStack {
+                                            // Click-outside-to-dismiss overlay
+                                            Color.clear
+                                                .contentShape(Rectangle())
+                                                .onTapGesture {
+                                                    showEditCategories = false
+                                                }
+                                            
+                                            // Edit categories view
+                                            EditCategoriesView(
+                                                currentCategory: activity.category,
+                                                onCategorySelected: { category in
+                                                    // Update activity category in database
+                                                    StorageManager.shared.updateTimelineCardCategory(
+                                                        startTime: activity.startTime,
+                                                        endTime: activity.endTime,
+                                                        category: category.name
+                                                    )
+                                                    
+                                                    // Trigger refresh by updating selectedDate slightly
+                                                    let calendar = Calendar.current
+                                                    if let refreshed = calendar.date(byAdding: .second, value: 1, to: selectedDate) {
+                                                        selectedDate = refreshed
+                                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                                            if let restored = calendar.date(byAdding: .second, value: -1, to: selectedDate) {
+                                                                selectedDate = restored
+                                                            }
+                                                        }
+                                                    }
+                                                    
+                                                    showEditCategories = false
+                                                },
+                                                onDismiss: { showEditCategories = false },
+                                                onEditDetails: { 
+                                                    showEditCategories = false
+                                                    showCategoryEditor = true
+                                                }
+                                            )
+                                            .environmentObject(categoryStore)
+                                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                                            .padding(.trailing, 8)
+                                            .padding(.top, 60)
+                                        }
+                                        .zIndex(1000)
+                                    }
+                                }
                             }
                             .clipShape(
                                 UnevenRoundedRectangle(
@@ -1198,6 +1248,328 @@ struct MetricRow: View {
 }
 
 // Background view moved to separate file: MainUIBackgroundView.swift
+
+struct EditCategoriesView: View {
+    let currentCategory: String
+    let onCategorySelected: (TimelineCategory) -> Void
+    let onDismiss: () -> Void
+    let onEditDetails: () -> Void
+    
+    @EnvironmentObject private var categoryStore: CategoryStore
+    
+    @State private var hoveredCategoryId: UUID? = nil
+    
+    private var allCategories: [TimelineCategory] {
+        // Show all categories (including system categories like Idle)
+        categoryStore.categories.sorted { $0.order < $1.order }
+    }
+    
+    private var currentCategoryObj: TimelineCategory? {
+        let normalized = currentCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return allCategories.first { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized }
+    }
+    
+    private var hintTextView: some View {
+        let prefixText = Text("To help Dayflow organize your activities more accurately, try adding more details to the descriptions in your categories ")
+            .font(Font.custom("Nunito", size: 10))
+            .foregroundColor(Color(red: 0.39, green: 0.35, blue: 0.33))
+        
+        let hereText = Text("here")
+            .font(Font.custom("Nunito", size: 10))
+            .foregroundColor(Color(red: 1, green: 0.4, blue: 0))
+            .underline()
+        
+        let suffixText = Text(".")
+            .font(Font.custom("Nunito", size: 10))
+            .foregroundColor(Color(red: 0.39, green: 0.35, blue: 0.33))
+        
+        return HStack(alignment: .top, spacing: 2) {
+            prefixText + hereText + suffixText
+        }
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Category chips with flexible wrapping
+            VStack(alignment: .leading, spacing: 4) {
+                FlexibleCategoryChipsView(
+                    categories: allCategories,
+                    currentCategoryId: currentCategoryObj?.id,
+                    hoveredCategoryId: $hoveredCategoryId,
+                    onCategoryTap: { category in
+                        onCategorySelected(category)
+                    }
+                )
+                .padding(.horizontal, 8)
+                .padding(.vertical, 12)
+            }
+            
+            // Separator line
+            Rectangle()
+                .fill(Color(red: 0.85, green: 0.85, blue: 0.85))
+                .frame(height: 1)
+                .padding(.horizontal, 0)
+            
+            // Hint text with clickable link
+            hintTextView
+                .padding(.horizontal, 8)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    onEditDetails()
+                }
+        }
+        .background(
+            RoundedRectangle(cornerRadii: .init(
+                topLeading: 0,
+                bottomLeading: 6,
+                bottomTrailing: 6,
+                topTrailing: 6
+            ))
+            .fill(Color(red: 0.98, green: 0.96, blue: 0.95).opacity(0.86))
+            .background(
+                // Backdrop blur effect
+                RoundedRectangle(cornerRadii: .init(
+                    topLeading: 0,
+                    bottomLeading: 6,
+                    bottomTrailing: 6,
+                    topTrailing: 6
+                ))
+                .fill(.ultraThinMaterial)
+            )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadii: .init(
+                topLeading: 0,
+                bottomLeading: 6,
+                bottomTrailing: 6,
+                topTrailing: 6
+            ))
+            .stroke(Color(red: 0.91, green: 0.88, blue: 0.87), lineWidth: 1)
+        )
+        .frame(width: 340)
+        .onTapGesture {
+            // Prevent tap from propagating to dismiss overlay
+        }
+        .overlay(alignment: .topTrailing) {
+            // Edit button with checkmark
+            Button(action: {
+                onEditDetails()
+            }) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundColor(.black)
+                    .frame(width: 20, height: 20)
+                    .background(
+                        RoundedRectangle(cornerRadii: .init(
+                            topLeading: 0,
+                            bottomLeading: 0,
+                            bottomTrailing: 6,
+                            topTrailing: 6
+                        ))
+                        .fill(Color(red: 0.98, green: 0.98, blue: 0.98).opacity(0.8))
+                        .background(
+                            RoundedRectangle(cornerRadii: .init(
+                                topLeading: 0,
+                                bottomLeading: 0,
+                                bottomTrailing: 6,
+                                topTrailing: 6
+                            ))
+                            .fill(.ultraThinMaterial)
+                        )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadii: .init(
+                            topLeading: 0,
+                            bottomLeading: 0,
+                            bottomTrailing: 6,
+                            topTrailing: 6
+                        ))
+                        .stroke(Color(red: 0.89, green: 0.89, blue: 0.89), lineWidth: 1)
+                    )
+            }
+            .buttonStyle(PlainButtonStyle())
+            .offset(x: 0, y: 0)
+        }
+    }
+}
+
+struct FlexibleCategoryChipsView: View {
+    let categories: [TimelineCategory]
+    let currentCategoryId: UUID?
+    @Binding var hoveredCategoryId: UUID?
+    let onCategoryTap: (TimelineCategory) -> Void
+    
+    var body: some View {
+        // Simple flow layout: VStack of HStacks that wrap
+        FlowLayout(spacing: 4) {
+            ForEach(categories) { category in
+                CategoryChip(
+                    category: category,
+                    isSelected: category.id == currentCategoryId,
+                    isHovered: category.id == hoveredCategoryId,
+                    onTap: { onCategoryTap(category) },
+                    onHover: { hovering in
+                        hoveredCategoryId = hovering ? category.id : nil
+                    }
+                )
+            }
+        }
+    }
+}
+
+struct CategoryChip: View {
+    let category: TimelineCategory
+    let isSelected: Bool
+    let isHovered: Bool
+    let onTap: () -> Void
+    let onHover: (Bool) -> Void
+    
+    private var chipColor: Color {
+        NSColor(hex: category.colorHex)
+            .map { Color(nsColor: $0) } ?? Color.gray
+    }
+    
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(category.isIdle ? Color.clear : chipColor)
+                    .overlay(
+                        Circle()
+                            .stroke(category.isIdle ? chipColor : Color.clear, lineWidth: 1)
+                    )
+                    .frame(width: 8, height: 8)
+                
+                Text(category.name)
+                    .font(Font.custom("Nunito", size: 10).weight(.medium))
+                    .foregroundColor(Color(red: 0.2, green: 0.2, blue: 0.2))
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(
+                Group {
+                    if isSelected {
+                        // Selected: gradient background with orange border
+                        LinearGradient(
+                            colors: [
+                                Color(red: 1, green: 0.99, blue: 0.97),
+                                Color(red: 1, green: 0.91, blue: 0.83)
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    } else {
+                        Color(red: 0.996, green: 0.996, blue: 0.996)
+                    }
+                }
+            )
+            .cornerRadius(6)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .inset(by: 0.375)
+                    .stroke(
+                        isSelected ? Color(red: 0.98, green: 0.73, blue: 0.5) : Color(red: 0.88, green: 0.88, blue: 0.88),
+                        lineWidth: 0.75
+                    )
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+        .onHover { hovering in
+            onHover(hovering)
+        }
+    }
+}
+
+// Simple flow layout that wraps items to multiple rows
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 4
+    
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let defaultSize = proposal.replacingUnspecifiedDimensions() ?? CGSize(width: 340, height: CGFloat.infinity)
+        let rows = layout(sizes: sizes, in: defaultSize)
+        
+        var totalHeight: CGFloat = 0
+        for row in rows {
+            let rowHeight = row.map { $0.height }.max() ?? 0
+            totalHeight += rowHeight
+            if row != rows.last {
+                totalHeight += spacing
+            }
+        }
+        
+        let maxWidth = rows.compactMap { row in
+            row.map { $0.x + $0.width }.max()
+        }.max() ?? 0
+        
+        return CGSize(width: maxWidth, height: totalHeight)
+    }
+    
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let rows = layout(sizes: sizes, in: bounds.size)
+        
+        var currentY: CGFloat = 0
+        
+        for (rowIndex, row) in rows.enumerated() {
+            if rowIndex > 0 {
+                // Add spacing before this row (height of previous row)
+                currentY += (rows[rowIndex - 1].first?.height ?? 0) + spacing
+            }
+            
+            for item in row {
+                subviews[item.index].place(
+                    at: CGPoint(x: bounds.minX + item.x, y: bounds.minY + currentY),
+                    proposal: .unspecified
+                )
+            }
+        }
+    }
+    
+    private struct RowItem {
+        let index: Int
+        let x: CGFloat
+        let width: CGFloat
+        let height: CGFloat
+    }
+    
+    private func layout(sizes: [CGSize], in containerSize: CGSize) -> [[RowItem]] {
+        var rows: [[RowItem]] = []
+        var currentRow: [RowItem] = []
+        var currentX: CGFloat = 0
+        var currentRowHeight: CGFloat = 0
+        
+        for (index, size) in sizes.enumerated() {
+            let itemWidth = size.width
+            let itemHeight = size.height
+            
+            // If this item doesn't fit on current row, start new row
+            if !currentRow.isEmpty && currentX + itemWidth > containerSize.width {
+                rows.append(currentRow)
+                currentRow = []
+                currentX = 0
+                currentRowHeight = 0
+            }
+            
+            let item = RowItem(
+                index: index,
+                x: currentX,
+                width: itemWidth,
+                height: itemHeight
+            )
+            currentRow.append(item)
+            currentX += itemWidth + spacing
+            currentRowHeight = max(currentRowHeight, itemHeight)
+        }
+        
+        if !currentRow.isEmpty {
+            rows.append(currentRow)
+        }
+        
+        return rows
+    }
+}
 
 func canNavigateForward(from date: Date, now: Date = Date()) -> Bool {
     let calendar = Calendar.current

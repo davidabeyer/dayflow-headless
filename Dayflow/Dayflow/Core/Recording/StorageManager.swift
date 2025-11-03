@@ -865,6 +865,21 @@ final class StorageManager: StorageManaging, @unchecked Sendable {
             """, arguments: [videoSummaryURL, cardId])
         }
     }
+    
+    func updateTimelineCardCategory(startTime: Date, endTime: Date, category: String) {
+        let startTs = Int(startTime.timeIntervalSince1970)
+        let endTs = Int(endTime.timeIntervalSince1970)
+        
+        try? timedWrite("updateTimelineCardCategory") {
+            db in
+            try db.execute(sql: """
+                UPDATE timeline_cards
+                SET category = ?
+                WHERE start_ts = ? AND end_ts = ?
+                  AND is_deleted = 0
+            """, arguments: [category, startTs, endTs])
+        }
+    }
 
     func fetchTimelineCards(forBatch batchId: Int64) -> [TimelineCard] {
         let decoder = JSONDecoder()
