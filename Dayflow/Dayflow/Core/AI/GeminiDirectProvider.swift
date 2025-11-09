@@ -395,138 +395,66 @@ final class GeminiDirectProvider: LLMProvider {
         Remember: The goal is to tell the story of what someone accomplished, not log every click. Group aggressively and only split when they truly change what they're doing for an extended period. If an activity is less than 2-3 minutes, it almost never deserves its own segment.
         """
 
-        // UNIFIED RETRY LOOP - Handles ALL errors comprehensively
-        let maxRetries = 6
-        var attempt = 0
-        var lastError: Error?
-        var finalResponse = ""
-        var finalObservations: [Observation] = []
-        var finalUsedModel = modelPreference.primary.rawValue
-
-        var modelState = ModelRunState(models: modelPreference.orderedModels)
-        let callGroupId = UUID().uuidString
-
-        while attempt < maxRetries {
-            do {
-                print("🔄 Video transcribe attempt \(attempt + 1)/\(maxRetries)")
-                let activeModel = modelState.current
-                let (response, usedModel) = try await geminiTranscribeRequest(
+        // Use unified retry mechanism
+        let (parsedTranscripts, finalResponse, finalUsedModel) = try await executeWithRetry(
+            batchId: batchId,
+            operation: "Video transcribe",
+            apiCall: { model, attempt, groupId in
+                let (response, _) = try await self.geminiTranscribeRequest(
                     fileURI: fileURI,
                     mimeType: mimeType,
                     prompt: finalTranscriptionPrompt,
                     batchId: batchId,
-                    groupId: callGroupId,
-                    model: activeModel,
-                    attempt: attempt + 1
+                    groupId: groupId,
+                    model: model,
+                    attempt: attempt
                 )
+                return response
+            },
+            parse: { response in
+                try self.parseTranscripts(response)
+            },
+            validate: { transcripts in
+                // Validate timestamps are within video duration
+                let tolerance: TimeInterval = 120.0 // 2 minutes
+                for chunk in transcripts {
+                    let startSeconds = self.parseVideoTimestamp(chunk.startTimestamp)
+                    let endSeconds = self.parseVideoTimestamp(chunk.endTimestamp)
 
-                let videoTranscripts = try parseTranscripts(response)
-
-                // Convert video transcripts to observations with proper Unix timestamps
-                // Validate and process observations
-                var hasValidationErrors = false
-                let observations = videoTranscripts.compactMap { chunk -> Observation? in
-                    let startSeconds = parseVideoTimestamp(chunk.startTimestamp)
-                    let endSeconds = parseVideoTimestamp(chunk.endTimestamp)
-
-                    // Validate timestamps are within video duration (with 2 minute tolerance)
-                    let tolerance: TimeInterval = 120.0 // 2 minutes
                     if Double(startSeconds) < -tolerance || Double(endSeconds) > videoDuration + tolerance {
-                        print("❌ VALIDATION ERROR: Observation timestamps exceed video duration!")
-                        hasValidationErrors = true
-                        return nil
-                    }
-                    let startDate = batchStartTime.addingTimeInterval(TimeInterval(startSeconds))
-                    let endDate = batchStartTime.addingTimeInterval(TimeInterval(endSeconds))
-
-                    return Observation(
-                        id: nil,
-                        batchId: 0, // Will be set when saved
-                        startTs: Int(startDate.timeIntervalSince1970),
-                        endTs: Int(endDate.timeIntervalSince1970),
-                        observation: chunk.description,
-                        metadata: nil,
-                        llmModel: usedModel,
-                        createdAt: Date()
-                    )
-                }
-
-                // If we had validation errors, throw to trigger retry
-                if hasValidationErrors {
-                    throw NSError(domain: "GeminiProvider", code: 100, userInfo: [
-                        NSLocalizedDescriptionKey: "Gemini generated observations with timestamps exceeding video duration. Video is \(durationString) long but observations extended beyond this."
-                    ])
-                }
-
-                // Ensure we have at least one observation
-                if observations.isEmpty {
-                    throw NSError(domain: "GeminiProvider", code: 101, userInfo: [
-                        NSLocalizedDescriptionKey: "No valid observations generated after filtering out invalid timestamps"
-                    ])
-                }
-
-                // SUCCESS! All validations passed
-                print("✅ Video transcription succeeded on attempt \(attempt + 1)")
-                finalResponse = response
-                finalObservations = observations
-                finalUsedModel = usedModel
-                break
-
-            } catch {
-                lastError = error
-                print("❌ Attempt \(attempt + 1) failed: \(error.localizedDescription)")
-
-                var appliedFallback = false
-                if let nsError = error as NSError?,
-                   nsError.domain == "GeminiError",
-                   Self.capacityErrorCodes.contains(nsError.code),
-                   let transition = modelState.advance() {
-
-                    appliedFallback = true
-                    let reason = fallbackReason(for: nsError.code)
-                    print("↘️ Downgrading to \(transition.to.rawValue) after \(nsError.code)")
-
-                    Task { @MainActor in
-                        await AnalyticsService.shared.capture("llm_model_fallback", [
-                            "provider": "gemini",
-                            "operation": "transcribe",
-                            "from_model": transition.from.rawValue,
-                            "to_model": transition.to.rawValue,
-                            "reason": reason,
-                            "batch_id": batchId as Any
+                        throw NSError(domain: "GeminiProvider", code: 100, userInfo: [
+                            NSLocalizedDescriptionKey: "Gemini generated observations with timestamps exceeding video duration. Video is \(durationString) long but observations extended beyond this."
                         ])
                     }
                 }
 
-                if !appliedFallback {
-                    // Normal error handling with backoff
-                    let strategy = classifyError(error)
-
-                    // Check if we should retry
-                    if strategy == .noRetry || attempt >= maxRetries - 1 {
-                        print("🚫 Not retrying: strategy=\(strategy), attempt=\(attempt + 1)/\(maxRetries)")
-                        throw error
-                    }
-
-                    // Apply appropriate delay based on error type
-                    let delay = delayForStrategy(strategy, attempt: attempt)
-                    if delay > 0 {
-                        print("⏳ Waiting \(String(format: "%.1f", delay))s before retry (strategy: \(strategy))")
-                        try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                    }
+                if transcripts.isEmpty {
+                    throw NSError(domain: "GeminiProvider", code: 101, userInfo: [
+                        NSLocalizedDescriptionKey: "No valid observations generated"
+                    ])
                 }
             }
+        )
 
-            attempt += 1
+        // Convert to observations
+        let observations = parsedTranscripts.map { chunk in
+            let startSeconds = parseVideoTimestamp(chunk.startTimestamp)
+            let endSeconds = parseVideoTimestamp(chunk.endTimestamp)
+            let startDate = batchStartTime.addingTimeInterval(TimeInterval(startSeconds))
+            let endDate = batchStartTime.addingTimeInterval(TimeInterval(endSeconds))
+
+            return Observation(
+                id: nil,
+                batchId: 0,
+                startTs: Int(startDate.timeIntervalSince1970),
+                endTs: Int(endDate.timeIntervalSince1970),
+                observation: chunk.description,
+                metadata: nil,
+                llmModel: finalUsedModel,
+                createdAt: Date()
+            )
         }
 
-        // Check if we succeeded
-        guard !finalObservations.isEmpty else {
-            throw lastError ?? NSError(domain: "GeminiProvider", code: 102, userInfo: [
-                NSLocalizedDescriptionKey: "Video transcription failed after \(maxRetries) attempts"
-            ])
-        }
-        
         let log = LLMCall(
             timestamp: callStart,
             latency: Date().timeIntervalSince(callStart),
@@ -534,7 +462,7 @@ final class GeminiDirectProvider: LLMProvider {
             output: finalResponse
         )
 
-        return (finalObservations, log)
+        return (observations, log)
     }
     
     // MARK: - Error Classification for Unified Retry
@@ -622,6 +550,84 @@ final class GeminiDirectProvider: LLMProvider {
         case .noRetry:
             return 0
         }
+    }
+
+    // MARK: - Unified Retry Mechanism
+
+    /// Executes an API operation with unified retry logic, model fallback, and error handling
+    private func executeWithRetry<T>(
+        maxRetries: Int = 6,
+        batchId: Int64?,
+        operation: String,
+        apiCall: (GeminiModel, Int, String) async throws -> String,
+        parse: (String) throws -> T,
+        validate: (T) throws -> Void = { _ in }
+    ) async throws -> (result: T, response: String, usedModel: String) {
+        var attempt = 0
+        var lastError: Error?
+        var modelState = ModelRunState(models: modelPreference.orderedModels)
+        let callGroupId = UUID().uuidString
+
+        while attempt < maxRetries {
+            do {
+                print("🔄 \(operation) attempt \(attempt + 1)/\(maxRetries)")
+                let activeModel = modelState.current
+                let response = try await apiCall(activeModel, attempt + 1, callGroupId)
+                let result = try parse(response)
+                try validate(result)
+
+                print("✅ \(operation) succeeded on attempt \(attempt + 1)")
+                return (result, response, activeModel.rawValue)
+
+            } catch {
+                lastError = error
+                print("❌ Attempt \(attempt + 1) failed: \(error.localizedDescription)")
+
+                // Try model fallback for capacity errors
+                var appliedFallback = false
+                if let nsError = error as NSError?,
+                   nsError.domain == "GeminiError",
+                   Self.capacityErrorCodes.contains(nsError.code),
+                   let transition = modelState.advance() {
+
+                    appliedFallback = true
+                    let reason = fallbackReason(for: nsError.code)
+                    print("↘️ Downgrading to \(transition.to.rawValue) after \(nsError.code)")
+
+                    Task { @MainActor in
+                        await AnalyticsService.shared.capture("llm_model_fallback", [
+                            "provider": "gemini",
+                            "operation": operation,
+                            "from_model": transition.from.rawValue,
+                            "to_model": transition.to.rawValue,
+                            "reason": reason,
+                            "batch_id": batchId as Any
+                        ])
+                    }
+                }
+
+                if !appliedFallback {
+                    let strategy = classifyError(error)
+
+                    if strategy == .noRetry || attempt >= maxRetries - 1 {
+                        print("🚫 Not retrying: strategy=\(strategy), attempt=\(attempt + 1)/\(maxRetries)")
+                        throw error
+                    }
+
+                    let delay = delayForStrategy(strategy, attempt: attempt)
+                    if delay > 0 {
+                        print("⏳ Waiting \(String(format: "%.1f", delay))s before retry (strategy: \(strategy))")
+                        try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    }
+                }
+            }
+
+            attempt += 1
+        }
+
+        throw lastError ?? NSError(domain: "GeminiError", code: 999, userInfo: [
+            NSLocalizedDescriptionKey: "\(operation) failed after \(maxRetries) attempts"
+        ])
     }
 
     func generateActivityCards(observations: [Observation], context: ActivityGenerationContext, batchId: Int64?) async throws -> (cards: [ActivityCardData], log: LLMCall) {
@@ -728,152 +734,76 @@ final class GeminiDirectProvider: LLMProvider {
                 ]
         """
 
-        // UNIFIED RETRY LOOP - Handles ALL errors comprehensively
-        let maxRetries = 6
-        var attempt = 0
-        var lastError: Error?
-        var actualPromptUsed = basePrompt
-        var finalResponse = ""
-        var finalCards: [ActivityCardData] = []
-
-        var modelState = ModelRunState(models: modelPreference.orderedModels)
-        let callGroupId = UUID().uuidString
-
-        while attempt < maxRetries {
-            do {
-                // THE ENTIRE PIPELINE: Request → Parse → Validate
-                print("🔄 Activity cards attempt \(attempt + 1)/\(maxRetries)")
-                let activeModel = modelState.current
-                let response = try await geminiCardsRequest(
-                    prompt: actualPromptUsed,
+        // Use unified retry with validation-driven prompt enhancement
+        var currentPrompt = basePrompt
+        let (normalizedCards, finalResponse, _) = try await executeWithRetry(
+            batchId: batchId,
+            operation: "Activity cards",
+            apiCall: { model, attempt, groupId in
+                try await self.geminiCardsRequest(
+                    prompt: currentPrompt,
                     batchId: batchId,
-                    groupId: callGroupId,
-                    model: activeModel,
-                    attempt: attempt + 1
+                    groupId: groupId,
+                    model: model,
+                    attempt: attempt
                 )
+            },
+            parse: { response in
+                let cards = try self.parseActivityCards(response)
+                return self.normalizeCards(cards, descriptors: context.categories)
+            },
+            validate: { cards in
+                let (coverageValid, coverageError) = self.validateTimeCoverage(existingCards: context.existingCards, newCards: cards)
+                let (durationValid, durationError) = self.validateTimeline(cards)
 
-                let cards = try parseActivityCards(response)
-                let normalizedCards = normalizeCards(cards, descriptors: context.categories)
+                guard coverageValid && durationValid else {
+                    print("⚠️ Validation failed")
+                    var errorMessages: [String] = []
 
-                // Validation phase
-                let (coverageValid, coverageError) = validateTimeCoverage(existingCards: context.existingCards, newCards: normalizedCards)
-                let (durationValid, durationError) = validateTimeline(normalizedCards)
+                    if !coverageValid, let error = coverageError {
+                        errorMessages.append("""
+                        TIME COVERAGE ERROR:
+                        \(error)
 
-                if coverageValid && durationValid {
-                    // SUCCESS! All validations passed
-                    print("✅ Activity cards generation succeeded on attempt \(attempt + 1)")
-                    finalResponse = response
-                    finalCards = normalizedCards
-                    break
-                }
-
-                // Validation failed - this gets enhanced prompt treatment
-                print("⚠️ Validation failed on attempt \(attempt + 1)")
-
-                var errorMessages: [String] = []
-                if !coverageValid && coverageError != nil {
-                    errorMessages.append("""
-                    TIME COVERAGE ERROR:
-                    \(coverageError!)
-
-                    You MUST ensure your output cards collectively cover ALL time periods from the input cards. Do not drop any time segments.
-                    """)
-                }
-
-                if !durationValid && durationError != nil {
-                    errorMessages.append("""
-                    DURATION ERROR:
-                    \(durationError!)
-
-                    REMINDER: All cards except the last one must be at least 10 minutes long. Please merge short activities into longer, more meaningful cards that tell a coherent story.
-                    """)
-                }
-
-                // Create enhanced prompt for validation retry
-                actualPromptUsed = basePrompt + """
-
-
-                PREVIOUS ATTEMPT FAILED - CRITICAL REQUIREMENTS NOT MET:
-
-                \(errorMessages.joined(separator: "\n\n"))
-
-                Please fix these issues and ensure your output meets all requirements.
-                """
-
-                // Brief delay for enhanced prompt retry
-                if attempt < maxRetries - 1 {
-                    try await Task.sleep(nanoseconds: UInt64(1.0 * 1_000_000_000))
-                }
-
-            } catch {
-                lastError = error
-                print("❌ Attempt \(attempt + 1) failed: \(error.localizedDescription)")
-
-                var appliedFallback = false
-                if let nsError = error as NSError?,
-                   nsError.domain == "GeminiError",
-                   Self.capacityErrorCodes.contains(nsError.code),
-                   let transition = modelState.advance() {
-
-                    appliedFallback = true
-                    let reason = fallbackReason(for: nsError.code)
-                    print("↘️ Downgrading to \(transition.to.rawValue) after \(nsError.code)")
-
-                    Task { @MainActor in
-                        await AnalyticsService.shared.capture("llm_model_fallback", [
-                            "provider": "gemini",
-                            "operation": "generate_activity_cards",
-                            "from_model": transition.from.rawValue,
-                            "to_model": transition.to.rawValue,
-                            "reason": reason,
-                            "batch_id": batchId as Any
-                        ])
-                    }
-                }
-
-                if !appliedFallback {
-                    // Normal error handling with backoff
-                    let strategy = classifyError(error)
-
-                    // Check if we should retry
-                    if strategy == .noRetry || attempt >= maxRetries - 1 {
-                        print("🚫 Not retrying: strategy=\(strategy), attempt=\(attempt + 1)/\(maxRetries)")
-                        throw error
+                        You MUST ensure your output cards collectively cover ALL time periods from the input cards. Do not drop any time segments.
+                        """)
                     }
 
-                    // Apply appropriate delay based on error type
-                    let delay = delayForStrategy(strategy, attempt: attempt)
-                    if delay > 0 {
-                        print("⏳ Waiting \(String(format: "%.1f", delay))s before retry (strategy: \(strategy))")
-                        try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    if !durationValid, let error = durationError {
+                        errorMessages.append("""
+                        DURATION ERROR:
+                        \(error)
+
+                        REMINDER: All cards except the last one must be at least 10 minutes long. Please merge short activities into longer, more meaningful cards that tell a coherent story.
+                        """)
                     }
 
-                    // For non-validation errors, reset to base prompt
-                    if strategy != .enhancedPrompt {
-                        actualPromptUsed = basePrompt
-                    }
+                    // Update prompt for next retry
+                    currentPrompt = basePrompt + """
+
+
+                    PREVIOUS ATTEMPT FAILED - CRITICAL REQUIREMENTS NOT MET:
+
+                    \(errorMessages.joined(separator: "\n\n"))
+
+                    Please fix these issues and ensure your output meets all requirements.
+                    """
+
+                    throw NSError(domain: "GeminiError", code: 999, userInfo: [
+                        NSLocalizedDescriptionKey: "Validation failed: \(errorMessages.joined(separator: "; "))"
+                    ])
                 }
             }
-
-            attempt += 1
-        }
-
-        // If we get here and finalCards is empty, all retries were exhausted
-        if finalCards.isEmpty {
-            print("❌ All \(maxRetries) attempts failed")
-            throw lastError ?? NSError(domain: "GeminiError", code: 999, userInfo: [
-                NSLocalizedDescriptionKey: "Activity card generation failed after \(maxRetries) attempts"
-            ])
-        }
+        )
 
         let log = LLMCall(
             timestamp: callStart,
             latency: Date().timeIntervalSince(callStart),
-            input: actualPromptUsed,
+            input: currentPrompt,
             output: finalResponse
         )
 
-        return (finalCards, log)
+        return (normalizedCards, log)
     }
     
     
