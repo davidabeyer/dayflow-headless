@@ -66,21 +66,6 @@ final class GeminiDirectProvider: LLMProvider {
         return lines.joined(separator: "\n")
     }
 
-    private func normalizeCategory(_ raw: String, descriptors: [LLMCategoryDescriptor]) -> String {
-        let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty else { return descriptors.first?.name ?? "" }
-        let normalized = cleaned.lowercased()
-        if let match = descriptors.first(where: { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized }) {
-            return match.name
-        }
-        if let idle = descriptors.first(where: { $0.isIdle }) {
-            let idleLabels = ["idle", "idle time", idle.name.lowercased()]
-            if idleLabels.contains(normalized) {
-                return idle.name
-            }
-        }
-        return descriptors.first?.name ?? cleaned
-    }
 
     private func normalizeCards(_ cards: [ActivityCardData], descriptors: [LLMCategoryDescriptor]) -> [ActivityCardData] {
         cards.map { card in
@@ -614,9 +599,9 @@ final class GeminiDirectProvider: LLMProvider {
         case .immediate:
             return 0
         case .shortBackoff:
-            return pow(2.0, Double(attempt)) * 2.0  // 2s, 4s, 8s
+            return exponentialBackoffDelay(attempt: attempt, baseDelay: 2.0)
         case .longBackoff:
-            return pow(2.0, Double(attempt)) * 30.0 // 30s, 60s, 120s
+            return exponentialBackoffDelay(attempt: attempt, baseDelay: 30.0)
         case .enhancedPrompt:
             return 1.0  // Brief delay for enhanced prompt
         case .noRetry:
@@ -904,7 +889,7 @@ final class GeminiDirectProvider: LLMProvider {
 
                     // Check if this is a retryable error
                     if shouldRetryUpload(error: error) && uploadAttempt < maxUploadRetries {
-                        let delay = pow(2.0, Double(uploadAttempt)) // Exponential backoff: 2s, 4s, 8s
+                        let delay = exponentialBackoffDelay(attempt: uploadAttempt)
                         print("🔄 Upload attempt \(uploadAttempt) failed, retrying in \(Int(delay))s: \(error.localizedDescription)")
                         try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                     } else {
@@ -1959,37 +1944,6 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
     private func formatTime(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
-        return formatter.string(from: date)
-    }
-    
-    private func parseVideoTimestamp(_ timestamp: String) -> Int {
-        let components = timestamp.components(separatedBy: ":")
-        
-        if components.count == 2 {
-            // MM:SS format
-            let minutes = Int(components[0]) ?? 0
-            let seconds = Int(components[1]) ?? 0
-            return minutes * 60 + seconds
-        } else if components.count == 3 {
-            // HH:MM:SS format
-            let hours = Int(components[0]) ?? 0
-            let minutes = Int(components[1]) ?? 0
-            let seconds = Int(components[2]) ?? 0
-            return hours * 3600 + minutes * 60 + seconds
-        } else {
-            // Invalid format, return 0
-            print("Warning: Invalid video timestamp format: \(timestamp)")
-            return 0
-        }
-    }
-    
-    // Helper function to format timestamps
-    private func formatTimestampForPrompt(_ unixTime: Int) -> String {
-        let date = Date(timeIntervalSince1970: TimeInterval(unixTime))
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone.current
         return formatter.string(from: date)
     }
     

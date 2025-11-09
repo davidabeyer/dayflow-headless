@@ -108,7 +108,7 @@ final class OllamaProvider: LLMProvider {
         )
         logs.append(firstLog)
         
-        let normalizedCategory = normalizeCategory(titleSummary.category, categories: context.categories)
+        let normalizedCategory = normalizeCategory(titleSummary.category, descriptors: context.categories)
 
         let initialCard = ActivityCardData(
             startTime: formatTimestampForPrompt(sortedObservations.first!.startTs),
@@ -555,7 +555,7 @@ final class OllamaProvider: LLMProvider {
                 
                 // If it's not the last attempt, wait before retrying
                 if attempt < attempts - 1 {
-                    let backoffDelay = pow(2.0, Double(attempt)) * 2.0 // 2s, 4s, 8s
+                    let backoffDelay = exponentialBackoffDelay(attempt: attempt, baseDelay: 2.0)
                     try await Task.sleep(nanoseconds: UInt64(backoffDelay * 1_000_000_000))
                 }
                 // Network error log without http info
@@ -638,21 +638,6 @@ final class OllamaProvider: LLMProvider {
         let confidence: Double
     }
 
-    private func normalizeCategory(_ raw: String, categories: [LLMCategoryDescriptor]) -> String {
-        let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty else { return categories.first?.name ?? "" }
-        let normalized = cleaned.lowercased()
-        if let match = categories.first(where: { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized }) {
-            return match.name
-        }
-        if let idle = categories.first(where: { $0.isIdle }) {
-            let idleLabels = ["idle", "idle time", idle.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()]
-            if idleLabels.contains(normalized) {
-                return idle.name
-            }
-        }
-        return categories.first?.name ?? cleaned
-    }
 
 
     private func generateSummary(observations: [Observation], categories: [LLMCategoryDescriptor], batchId: Int64?) async throws -> (SummaryResponse, String) {
@@ -1074,39 +1059,7 @@ final class OllamaProvider: LLMProvider {
 
         throw lastError ?? NSError(domain: "OllamaProvider", code: 14, userInfo: [NSLocalizedDescriptionKey: "Failed to merge cards after multiple attempts"])
     }
-    
-    private func parseJSONResponse<T: Codable>(_ type: T.Type, from data: Data) throws -> T {
-        // First try direct parsing
-        do {
-            return try JSONDecoder().decode(type, from: data)
-        } catch {
-            // Try to extract JSON from the response
-            guard let responseString = String(data: data, encoding: .utf8) else {
-                throw error
-            }
-            
-            // Look for JSON object
-            if let startIndex = responseString.firstIndex(of: "{"),
-               let endIndex = responseString.lastIndex(of: "}") {
-                let jsonSubstring = responseString[startIndex...endIndex]
-                if let jsonData = jsonSubstring.data(using: .utf8) {
-                    return try JSONDecoder().decode(type, from: jsonData)
-                }
-            }
-            
-            throw error
-        }
-    }
-    
-    private func formatTimestampForPrompt(_ timestamp: Int) -> String {
-        let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone.current
-        return formatter.string(from: date)
-    }
-    
+
     private func calculateDurationInMinutes(from startTime: String, to endTime: String) -> Int {
         let formatter = DateFormatter()
         formatter.dateFormat = "h:mm a"
