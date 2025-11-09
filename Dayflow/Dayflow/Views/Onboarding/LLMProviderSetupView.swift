@@ -35,6 +35,43 @@ struct CLIResult {
     let exitCode: Int32
 }
 
+// Consolidated CLI process configuration utilities
+private struct CLIProcessConfig {
+    static func prepareEnvironment(overrides: [String: String]? = nil) -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        if let overrides = overrides {
+            environment.merge(overrides, uniquingKeysWith: { _, new in new })
+        }
+
+        var pathComponents: [String] = environment["PATH"]
+            .map { $0.split(separator: ":").map { String($0) } } ?? []
+        for rawPath in cliSearchPaths {
+            let expanded = (rawPath as NSString).expandingTildeInPath
+            if !pathComponents.contains(expanded) {
+                pathComponents.append(expanded)
+            }
+        }
+        environment["PATH"] = pathComponents.joined(separator: ":")
+        environment["HOME"] = environment["HOME"] ?? NSHomeDirectory()
+
+        return environment
+    }
+
+    static func configureExecutable(_ process: Process, command: String, args: [String]) throws {
+        let expandedCommand = (command as NSString).expandingTildeInPath
+        if expandedCommand.hasPrefix("/") {
+            guard FileManager.default.isExecutableFile(atPath: expandedCommand) else {
+                throw NSError(domain: "StreamingCLI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Executable not found: \(expandedCommand)"])
+            }
+            process.executableURL = URL(fileURLWithPath: expandedCommand)
+            process.arguments = args
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = [expandedCommand] + args
+        }
+    }
+}
+
 @discardableResult
 func runCLI(
     _ command: String,
@@ -43,47 +80,21 @@ func runCLI(
     cwd: URL? = nil
 ) throws -> CLIResult {
     let process = Process()
-    let expandedCommand = (command as NSString).expandingTildeInPath
-    if expandedCommand.hasPrefix("/") {
-        guard FileManager.default.isExecutableFile(atPath: expandedCommand) else {
-            throw NSError(domain: "StreamingCLI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Executable not found: \(expandedCommand)"])
-        }
-        process.executableURL = URL(fileURLWithPath: expandedCommand)
-        process.arguments = args
-    } else {
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [expandedCommand] + args
-    }
+    try CLIProcessConfig.configureExecutable(process, command: command, args: args)
     process.currentDirectoryURL = cwd
-    
-    var environment = ProcessInfo.processInfo.environment
-    if let overrides = env {
-        environment.merge(overrides, uniquingKeysWith: { _, new in new })
-    }
-    
-    var pathComponents: [String] = environment["PATH"]
-        .map { $0.split(separator: ":").map { String($0) } } ?? []
-    for rawPath in cliSearchPaths {
-        let expanded = (rawPath as NSString).expandingTildeInPath
-        if !pathComponents.contains(expanded) {
-            pathComponents.append(expanded)
-        }
-    }
-    environment["PATH"] = pathComponents.joined(separator: ":")
-    environment["HOME"] = environment["HOME"] ?? NSHomeDirectory()
-    process.environment = environment
-    
+    process.environment = CLIProcessConfig.prepareEnvironment(overrides: env)
+
     let stdoutPipe = Pipe()
     let stderrPipe = Pipe()
     process.standardOutput = stdoutPipe
     process.standardError = stderrPipe
-    
+
     try process.run()
     process.waitUntilExit()
-    
+
     let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
     let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-    
+
     return CLIResult(stdout: stdout, stderr: stderr, exitCode: process.terminationStatus)
 }
 
@@ -91,11 +102,11 @@ final class StreamingCLI {
     private var process: Process?
     private let stdoutPipe = Pipe()
     private let stderrPipe = Pipe()
-    
+
     func cancel() {
         process?.terminate()
     }
-    
+
     func run(
         command: String,
         args: [String],
@@ -107,43 +118,22 @@ final class StreamingCLI {
     ) {
         let proc = Process()
         process = proc
-        
-        let expandedCommand = (command as NSString).expandingTildeInPath
-        if expandedCommand.hasPrefix("/") {
-            guard FileManager.default.isExecutableFile(atPath: expandedCommand) else {
-                DispatchQueue.main.async {
-                    onStderr("Executable not found or not executable: \(expandedCommand)\n")
-                    onFinish(-1)
-                }
-                return
+
+        do {
+            try CLIProcessConfig.configureExecutable(proc, command: command, args: args)
+        } catch {
+            DispatchQueue.main.async {
+                onStderr("Executable not found or not executable: \(command)\n")
+                onFinish(-1)
             }
-            proc.executableURL = URL(fileURLWithPath: expandedCommand)
-            proc.arguments = args
-        } else {
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            proc.arguments = [expandedCommand] + args
+            return
         }
+
         proc.currentDirectoryURL = cwd
-        
-        var environment = ProcessInfo.processInfo.environment
-        if let overrides = env {
-            environment.merge(overrides, uniquingKeysWith: { _, new in new })
-        }
-        var pathComponents: [String] = environment["PATH"]
-            .map { $0.split(separator: ":").map { String($0) } } ?? []
-        for rawPath in cliSearchPaths {
-            let expanded = (rawPath as NSString).expandingTildeInPath
-            if !pathComponents.contains(expanded) {
-                pathComponents.append(expanded)
-            }
-        }
-        environment["PATH"] = pathComponents.joined(separator: ":")
-        environment["HOME"] = environment["HOME"] ?? NSHomeDirectory()
-        proc.environment = environment
-        
+        proc.environment = CLIProcessConfig.prepareEnvironment(overrides: env)
         proc.standardOutput = stdoutPipe
         proc.standardError = stderrPipe
-        
+
         stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
@@ -151,7 +141,7 @@ final class StreamingCLI {
                 onStdout(chunk)
             }
         }
-        
+
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
@@ -159,7 +149,7 @@ final class StreamingCLI {
                 onStderr(chunk)
             }
         }
-        
+
         do {
             try proc.run()
             proc.terminationHandler = { process in
@@ -178,15 +168,37 @@ final class StreamingCLI {
     }
 }
 
+// Helper view for primary action buttons with consistent styling
+private struct PrimaryActionButton<Content: View>: View {
+    let action: () -> Void
+    @ViewBuilder let content: () -> Content
+    var horizontalPadding: CGFloat = 24
+    var verticalPadding: CGFloat = 12
+
+    var body: some View {
+        DayflowSurfaceButton(
+            action: action,
+            content: content,
+            background: Color(red: 0.25, green: 0.17, blue: 0),
+            foreground: .white,
+            borderColor: .clear,
+            cornerRadius: 8,
+            horizontalPadding: horizontalPadding,
+            verticalPadding: verticalPadding,
+            showOverlayStroke: true
+        )
+    }
+}
+
 struct LLMProviderSetupView: View {
     let providerType: String // "ollama" or "gemini"
     let onBack: () -> Void
     let onComplete: () -> Void
-    
+
     private var activeProviderType: String {
         providerType == "chatgpt_claude" ? "gemini" : providerType
     }
-    
+
     // Layout constants
     private let sidebarWidth: CGFloat = 250
     private let fixedOffset: CGFloat = 50
@@ -287,41 +299,21 @@ struct LLMProviderSetupView: View {
     @ViewBuilder
     private var nextButton: some View {
         if setupState.isLastStep {
-            DayflowSurfaceButton(
-                action: { saveConfiguration(); onComplete() },
-                content: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "checkmark.circle.fill").font(.system(size: 14))
-                        Text("Complete Setup").font(.custom("Nunito", size: 14)).fontWeight(.semibold)
-                    }
-                },
-                background: Color(red: 0.25, green: 0.17, blue: 0),
-                foreground: .white,
-                borderColor: .clear,
-                cornerRadius: 8,
-                horizontalPadding: 24,
-                verticalPadding: 12,
-                showOverlayStroke: true
-            )
+            PrimaryActionButton(action: { saveConfiguration(); onComplete() }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill").font(.system(size: 14))
+                    Text("Complete Setup").font(.custom("Nunito", size: 14)).fontWeight(.semibold)
+                }
+            }
         } else {
-            DayflowSurfaceButton(
-                action: handleContinue,
-                content: {
-                    HStack(spacing: 6) {
-                        Text(nextButtonText).font(.custom("Nunito", size: 14)).fontWeight(.semibold)
-                        if nextButtonText == "Next" {
-                            Image(systemName: "chevron.right").font(.system(size: 12, weight: .medium))
-                        }
+            PrimaryActionButton(action: handleContinue) {
+                HStack(spacing: 6) {
+                    Text(nextButtonText).font(.custom("Nunito", size: 14)).fontWeight(.semibold)
+                    if nextButtonText == "Next" {
+                        Image(systemName: "chevron.right").font(.system(size: 12, weight: .medium))
                     }
-                },
-                background: Color(red: 0.25, green: 0.17, blue: 0),
-                foreground: .white,
-                borderColor: .clear,
-                cornerRadius: 8,
-                horizontalPadding: 24,
-                verticalPadding: 12,
-                showOverlayStroke: true
-            )
+                }
+            }
             .disabled(!setupState.canContinue)
             .opacity(!setupState.canContinue ? 0.5 : 1.0)
         }
@@ -344,59 +336,43 @@ struct LLMProviderSetupView: View {
                         .foregroundColor(.black.opacity(0.6))
                 }
                 HStack(alignment: .center, spacing: 12) {
-                    DayflowSurfaceButton(
-                        action: { setupState.selectEngine(.lmstudio); openLMStudioDownload() },
-                        content: {
-                            AsyncImage(url: URL(string: "https://lmstudio.ai/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Flmstudio-app-logo.11b4d746.webp&w=96&q=75")) { phase in
-                                switch phase {
-                                case .success(let image): image.resizable().scaledToFit()
-                                case .failure(_): Image(systemName: "desktopcomputer").resizable().scaledToFit().foregroundColor(.white.opacity(0.6))
-                                case .empty: ProgressView().scaleEffect(0.7)
-                                @unknown default: EmptyView()
-                                }
+                    PrimaryActionButton(action: { setupState.selectEngine(.lmstudio); openLMStudioDownload() }) {
+                        AsyncImage(url: URL(string: "https://lmstudio.ai/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Flmstudio-app-logo.11b4d746.webp&w=96&q=75")) { phase in
+                            switch phase {
+                            case .success(let image): image.resizable().scaledToFit()
+                            case .failure(_): Image(systemName: "desktopcomputer").resizable().scaledToFit().foregroundColor(.white.opacity(0.6))
+                            case .empty: ProgressView().scaleEffect(0.7)
+                            @unknown default: EmptyView()
                             }
-                            .frame(width: 18, height: 18)
-                            Text("Download LM Studio")
-                                .font(.custom("Nunito", size: 14))
-                                .fontWeight(.semibold)
-                        },
-                        background: Color(red: 0.25, green: 0.17, blue: 0),
-                        foreground: .white,
-                        borderColor: .clear,
-                        cornerRadius: 8,
-                        showOverlayStroke: true
-                    )
+                        }
+                        .frame(width: 18, height: 18)
+                        Text("Download LM Studio")
+                            .font(.custom("Nunito", size: 14))
+                            .fontWeight(.semibold)
+                    }
                     Text("or")
                         .font(.custom("Nunito", size: 13))
                         .foregroundColor(.black.opacity(0.5))
                         .padding(.horizontal, 4)
-                    DayflowSurfaceButton(
-                        action: { setupState.selectEngine(.ollama); openOllamaDownload() },
-                        content: {
-                            AsyncImage(url: URL(string: "https://ollama.com/public/ollama.png")) { phase in
-                                switch phase {
-                                case .success(let image):
-                                    image
-                                        .renderingMode(.template)
-                                        .resizable()
-                                        .scaledToFit()
-                                        .foregroundColor(.white)
-                                case .failure(_): Image(systemName: "shippingbox").resizable().scaledToFit().foregroundColor(.white.opacity(0.6))
-                                case .empty: ProgressView().scaleEffect(0.7)
-                                @unknown default: EmptyView()
-                                }
+                    PrimaryActionButton(action: { setupState.selectEngine(.ollama); openOllamaDownload() }) {
+                        AsyncImage(url: URL(string: "https://ollama.com/public/ollama.png")) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image
+                                    .renderingMode(.template)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .foregroundColor(.white)
+                            case .failure(_): Image(systemName: "shippingbox").resizable().scaledToFit().foregroundColor(.white.opacity(0.6))
+                            case .empty: ProgressView().scaleEffect(0.7)
+                            @unknown default: EmptyView()
                             }
-                            .frame(width: 18, height: 18)
-                            Text("Download Ollama")
-                                .font(.custom("Nunito", size: 14))
-                                .fontWeight(.semibold)
-                        },
-                        background: Color(red: 0.25, green: 0.17, blue: 0),
-                        foreground: .white,
-                        borderColor: .clear,
-                        cornerRadius: 8,
-                        showOverlayStroke: true
-                    )
+                        }
+                        .frame(width: 18, height: 18)
+                        Text("Download Ollama")
+                            .font(.custom("Nunito", size: 14))
+                            .fontWeight(.semibold)
+                    }
                 }
                 Text("Already have a local server? Make sure it’s OpenAI-compatible. You can set a custom base URL in the next step.")
                     .font(.custom("Nunito", size: 13))
@@ -424,22 +400,12 @@ struct LLMProviderSetupView: View {
                             .font(.custom("Nunito", size: 14))
                             .foregroundColor(.black.opacity(0.6))
 
-                        DayflowSurfaceButton(
-                            action: openLMStudioModelDownload,
-                            content: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "arrow.down.circle.fill").font(.system(size: 14))
-                                    Text("Download Qwen 2.5 VL in LM Studio").font(.custom("Nunito", size: 14)).fontWeight(.semibold)
-                                }
-                            },
-                            background: Color(red: 0.25, green: 0.17, blue: 0),
-                            foreground: .white,
-                            borderColor: .clear,
-                            cornerRadius: 8,
-                            horizontalPadding: 24,
-                            verticalPadding: 12,
-                            showOverlayStroke: true
-                        )
+                        PrimaryActionButton(action: openLMStudioModelDownload) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "arrow.down.circle.fill").font(.system(size: 14))
+                                Text("Download Qwen 2.5 VL in LM Studio").font(.custom("Nunito", size: 14)).fontWeight(.semibold)
+                            }
+                        }
 
                         VStack(alignment: .leading, spacing: 6) {
                             Text("This will open LM Studio and prompt you to download the model (≈3GB).")
@@ -728,22 +694,12 @@ struct LLMProviderSetupView: View {
                 
                 // Buttons row with Open Google AI Studio on left, Next on right
                 HStack {
-                    DayflowSurfaceButton(
-                        action: openGoogleAIStudio,
-                        content: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "safari").font(.system(size: 14))
-                                Text("Open Google AI Studio").font(.custom("Nunito", size: 14)).fontWeight(.semibold)
-                            }
-                        },
-                        background: Color(red: 0.25, green: 0.17, blue: 0),
-                        foreground: .white,
-                        borderColor: .clear,
-                        cornerRadius: 8,
-                        horizontalPadding: 24,
-                        verticalPadding: 12,
-                        showOverlayStroke: true
-                    )
+                    PrimaryActionButton(action: openGoogleAIStudio) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "safari").font(.system(size: 14))
+                            Text("Open Google AI Studio").font(.custom("Nunito", size: 14)).fontWeight(.semibold)
+                        }
+                    }
                     Spacer()
                     nextButton
                 }
@@ -1100,22 +1056,6 @@ class ProviderSetupState: ObservableObject {
         }
     }
     
-    private func cliEnvironment(overrides: [String: String]? = nil) -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
-        var components = env["PATH"].map { $0.split(separator: ":").map { String($0) } } ?? []
-        for raw in CLIDetector.searchPaths {
-            let expanded = (raw as NSString).expandingTildeInPath
-            if !components.contains(expanded) {
-                components.append(expanded)
-            }
-        }
-        env["PATH"] = components.joined(separator: ":")
-        env["HOME"] = env["HOME"] ?? NSHomeDirectory()
-        if let overrides = overrides {
-            env.merge(overrides, uniquingKeysWith: { _, new in new })
-        }
-        return env
-    }
     
     func runCodexStream() {
         guard !isRunningCodexStream else { return }
@@ -1129,7 +1069,7 @@ class ProviderSetupState: ObservableObject {
         codexStreamer.run(
             command: path,
             args: ["exec", "--json", prompt],
-            env: cliEnvironment(),
+            env: CLIProcessConfig.prepareEnvironment(),
             onStdout: { [weak self] chunk in
                 self?.codexStreamOutput.append(chunk)
             },
@@ -1164,7 +1104,7 @@ class ProviderSetupState: ObservableObject {
         claudeStreamer.run(
             command: path,
             args: ["--print", "--output-format", "json", prompt],
-            env: cliEnvironment(),
+            env: CLIProcessConfig.prepareEnvironment(),
             onStdout: { [weak self] chunk in
                 self?.claudeStreamOutput.append(chunk)
             },
@@ -1625,7 +1565,7 @@ struct ChatCLIDetectionStepView<NextButton: View>: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.custom("Nunito", size: 13))
                 HStack(spacing: 12) {
-                    DayflowSurfaceButton(
+                    PrimaryActionButton(
                         action: {
                             if isRunningCodex {
                                 onCancelCodex()
@@ -1633,25 +1573,19 @@ struct ChatCLIDetectionStepView<NextButton: View>: View {
                                 onRunCodex()
                             }
                         },
-                        content: {
-                            HStack(spacing: 6) {
-                                Image(systemName: isRunningCodex ? "stop.fill" : "play.fill").font(.system(size: 12, weight: .semibold))
-                                Text(isRunningCodex ? "Stop Codex" : "Run Codex")
-                                    .font(.custom("Nunito", size: 13))
-                                    .fontWeight(.semibold)
-                            }
-                        },
-                        background: Color(red: 0.25, green: 0.17, blue: 0),
-                        foreground: .white,
-                        borderColor: .clear,
-                        cornerRadius: 8,
                         horizontalPadding: 16,
-                        verticalPadding: 10,
-                        showOverlayStroke: true
-                    )
+                        verticalPadding: 10
+                    ) {
+                        HStack(spacing: 6) {
+                            Image(systemName: isRunningCodex ? "stop.fill" : "play.fill").font(.system(size: 12, weight: .semibold))
+                            Text(isRunningCodex ? "Stop Codex" : "Run Codex")
+                                .font(.custom("Nunito", size: 13))
+                                .fontWeight(.semibold)
+                        }
+                    }
                     .disabled(!(codexStatus.isInstalled || codexReport?.resolvedPath != nil) && !isRunningCodex)
-                    
-                    DayflowSurfaceButton(
+
+                    PrimaryActionButton(
                         action: {
                             if isRunningClaude {
                                 onCancelClaude()
@@ -1659,22 +1593,16 @@ struct ChatCLIDetectionStepView<NextButton: View>: View {
                                 onRunClaude()
                             }
                         },
-                        content: {
-                            HStack(spacing: 6) {
-                                Image(systemName: isRunningClaude ? "stop.fill" : "play.fill").font(.system(size: 12, weight: .semibold))
-                                Text(isRunningClaude ? "Stop Claude" : "Run Claude")
-                                    .font(.custom("Nunito", size: 13))
-                                    .fontWeight(.semibold)
-                            }
-                        },
-                        background: Color(red: 0.25, green: 0.17, blue: 0),
-                        foreground: .white,
-                        borderColor: .clear,
-                        cornerRadius: 8,
                         horizontalPadding: 16,
-                        verticalPadding: 10,
-                        showOverlayStroke: true
-                    )
+                        verticalPadding: 10
+                    ) {
+                        HStack(spacing: 6) {
+                            Image(systemName: isRunningClaude ? "stop.fill" : "play.fill").font(.system(size: 12, weight: .semibold))
+                            Text(isRunningClaude ? "Stop Claude" : "Run Claude")
+                                .font(.custom("Nunito", size: 13))
+                                .fontWeight(.semibold)
+                        }
+                    }
                     .disabled(!(claudeStatus.isInstalled || claudeReport?.resolvedPath != nil) && !isRunningClaude)
                 }
                 if !codexOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1693,32 +1621,26 @@ struct ChatCLIDetectionStepView<NextButton: View>: View {
             )
             
             HStack {
-                DayflowSurfaceButton(
+                PrimaryActionButton(
                     action: {
                         if !isChecking {
                             onRetry()
                         }
                     },
-                    content: {
-                        HStack(spacing: 8) {
-                            if isChecking {
-                                ProgressView().scaleEffect(0.7)
-                            } else {
-                                Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .semibold))
-                            }
-                            Text(isChecking ? "Checking…" : "Re-check")
-                                .font(.custom("Nunito", size: 14))
-                                .fontWeight(.semibold)
-                        }
-                    },
-                    background: accentColor,
-                    foreground: .white,
-                    borderColor: .clear,
-                    cornerRadius: 8,
                     horizontalPadding: 20,
-                    verticalPadding: 10,
-                    showOverlayStroke: true
-                )
+                    verticalPadding: 10
+                ) {
+                    HStack(spacing: 8) {
+                        if isChecking {
+                            ProgressView().scaleEffect(0.7)
+                        } else {
+                            Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .semibold))
+                        }
+                        Text(isChecking ? "Checking…" : "Re-check")
+                            .font(.custom("Nunito", size: 14))
+                            .fontWeight(.semibold)
+                    }
+                }
                 .disabled(isChecking)
                 
                 Spacer()
@@ -1951,28 +1873,18 @@ struct DebugCommandConsole: View {
                 TextField("Command", text: $command)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
-                DayflowSurfaceButton(
-                    action: runAction,
-                    content: {
-                        HStack(spacing: 6) {
-                            if isRunning {
-                                ProgressView().scaleEffect(0.7)
-                            } else {
-                                Image(systemName: "play.fill").font(.system(size: 12, weight: .semibold))
-                            }
-                            Text(isRunning ? "Running..." : "Run")
-                                .font(.custom("Nunito", size: 13))
-                                .fontWeight(.semibold)
+                PrimaryActionButton(action: runAction, horizontalPadding: 14, verticalPadding: 10) {
+                    HStack(spacing: 6) {
+                        if isRunning {
+                            ProgressView().scaleEffect(0.7)
+                        } else {
+                            Image(systemName: "play.fill").font(.system(size: 12, weight: .semibold))
                         }
-                    },
-                    background: accentColor,
-                    foreground: .white,
-                    borderColor: .clear,
-                    cornerRadius: 8,
-                    horizontalPadding: 14,
-                    verticalPadding: 10,
-                    showOverlayStroke: true
-                )
+                        Text(isRunning ? "Running..." : "Run")
+                            .font(.custom("Nunito", size: 13))
+                            .fontWeight(.semibold)
+                    }
+                }
                 .disabled(isRunning)
             }
             ScrollView {
