@@ -866,6 +866,44 @@ final class StorageManager: StorageManaging, @unchecked Sendable {
         }
     }
 
+    // MARK: - Helper Methods
+
+    /// Decodes metadata JSON from a row, supporting both new TimelineMetadata format and legacy array format
+    private func decodeMetadata(from row: Row, using decoder: JSONDecoder = JSONDecoder()) -> (distractions: [Distraction]?, appSites: AppSites?) {
+        guard let metadataString: String = row["metadata"],
+              let jsonData = metadataString.data(using: .utf8) else {
+            return (nil, nil)
+        }
+
+        if let meta = try? decoder.decode(TimelineMetadata.self, from: jsonData) {
+            return (meta.distractions, meta.appSites)
+        } else if let legacy = try? decoder.decode([Distraction].self, from: jsonData) {
+            return (legacy, nil)
+        }
+
+        return (nil, nil)
+    }
+
+    /// Creates a TimelineCard from a database row
+    private func buildTimelineCard(from row: Row, decoder: JSONDecoder = JSONDecoder()) -> TimelineCard {
+        let (distractions, appSites) = decodeMetadata(from: row, using: decoder)
+        return TimelineCard(
+            batchId: row["batch_id"],
+            startTimestamp: row["start"] ?? "",
+            endTimestamp: row["end"] ?? "",
+            category: row["category"],
+            subcategory: row["subcategory"],
+            title: row["title"],
+            summary: row["summary"],
+            detailedSummary: row["detailed_summary"],
+            day: row["day"],
+            distractions: distractions,
+            videoSummaryURL: row["video_summary_url"],
+            otherVideoSummaryURLs: nil,
+            appSites: appSites
+        )
+    }
+
     func fetchTimelineCards(forBatch batchId: Int64) -> [TimelineCard] {
         let decoder = JSONDecoder()
         return (try? timedRead("fetchTimelineCards(forBatch)") { db in
@@ -875,32 +913,7 @@ final class StorageManager: StorageManaging, @unchecked Sendable {
                   AND is_deleted = 0
                 ORDER BY start ASC
             """, arguments: [batchId]).map { row in
-                var distractions: [Distraction]? = nil
-                var appSites: AppSites? = nil
-                if let metadataString: String = row["metadata"],
-                   let jsonData = metadataString.data(using: .utf8) {
-                    if let meta = try? decoder.decode(TimelineMetadata.self, from: jsonData) {
-                        distractions = meta.distractions
-                        appSites = meta.appSites
-                    } else if let legacy = try? decoder.decode([Distraction].self, from: jsonData) {
-                        distractions = legacy
-                    }
-                }
-                return TimelineCard(
-                    batchId: batchId,
-                    startTimestamp: row["start"] ?? "",
-                    endTimestamp: row["end"] ?? "",
-                    category: row["category"],
-                    subcategory: row["subcategory"],
-                    title: row["title"],
-                    summary: row["summary"],
-                    detailedSummary: row["detailed_summary"],
-                    day: row["day"],
-                    distractions: distractions,
-                    videoSummaryURL: row["video_summary_url"],
-                    otherVideoSummaryURLs: nil,
-                    appSites: appSites
-                )
+                buildTimelineCard(from: row, decoder: decoder)
             }
         }) ?? []
     }
@@ -941,20 +954,20 @@ final class StorageManager: StorageManaging, @unchecked Sendable {
 
     func fetchTimelineCards(forDay day: String) -> [TimelineCard] {
         let decoder = JSONDecoder()
-        
+
         guard let dayDate = dateFormatter.date(from: day) else {
             return []
         }
-        
+
         let calendar = Calendar.current
-        
+
         // Get 4 AM of the given day as the start
         var startComponents = calendar.dateComponents([.year, .month, .day], from: dayDate)
         startComponents.hour = 4
         startComponents.minute = 0
         startComponents.second = 0
         guard let dayStart = calendar.date(from: startComponents) else { return [] }
-        
+
         // Get 4 AM of the next day as the end
         guard let nextDay = calendar.date(byAdding: .day, value: 1, to: dayDate) else { return [] }
         var endComponents = calendar.dateComponents([.year, .month, .day], from: nextDay)
@@ -962,7 +975,7 @@ final class StorageManager: StorageManaging, @unchecked Sendable {
         endComponents.minute = 0
         endComponents.second = 0
         guard let dayEnd = calendar.date(from: endComponents) else { return [] }
-        
+
         let startTs = Int(dayStart.timeIntervalSince1970)
         let endTs = Int(dayEnd.timeIntervalSince1970)
 
@@ -974,35 +987,7 @@ final class StorageManager: StorageManaging, @unchecked Sendable {
                 ORDER BY start_ts ASC, start ASC
             """, arguments: [startTs, endTs])
             .map { row in
-                // Decode metadata JSON (supports object or legacy array)
-                var distractions: [Distraction]? = nil
-                var appSites: AppSites? = nil
-                if let metadataString: String = row["metadata"],
-                   let jsonData = metadataString.data(using: .utf8) {
-                    if let meta = try? decoder.decode(TimelineMetadata.self, from: jsonData) {
-                        distractions = meta.distractions
-                        appSites = meta.appSites
-                    } else if let legacy = try? decoder.decode([Distraction].self, from: jsonData) {
-                        distractions = legacy
-                    }
-                }
-
-                // Create TimelineCard instance using renamed columns
-                return TimelineCard(
-                    batchId: row["batch_id"],
-                    startTimestamp: row["start"] ?? "", // Use row["start"]
-                    endTimestamp: row["end"] ?? "",   // Use row["end"]
-                    category: row["category"],
-                    subcategory: row["subcategory"],
-                    title: row["title"],
-                    summary: row["summary"],
-                    detailedSummary: row["detailed_summary"],
-                    day: row["day"],
-                    distractions: distractions,
-                    videoSummaryURL: row["video_summary_url"],
-                    otherVideoSummaryURLs: nil,
-                    appSites: appSites
-                )
+                buildTimelineCard(from: row, decoder: decoder)
             }
         }
         return cards ?? []
@@ -1013,7 +998,6 @@ final class StorageManager: StorageManaging, @unchecked Sendable {
         let fromTs = Int(from.timeIntervalSince1970)
         let toTs = Int(to.timeIntervalSince1970)
 
-
         let cards: [TimelineCard]? = try? timedRead("fetchTimelineCardsByTimeRange") { db in
             try Row.fetchAll(db, sql: """
                 SELECT * FROM timeline_cards
@@ -1023,39 +1007,10 @@ final class StorageManager: StorageManaging, @unchecked Sendable {
                 ORDER BY start_ts ASC
             """, arguments: [toTs, fromTs, fromTs, toTs])
             .map { row in
-                // Decode metadata JSON (supports object or legacy array)
-                var distractions: [Distraction]? = nil
-                var appSites: AppSites? = nil
-                if let metadataString: String = row["metadata"],
-                   let jsonData = metadataString.data(using: .utf8) {
-                    if let meta = try? decoder.decode(TimelineMetadata.self, from: jsonData) {
-                        distractions = meta.distractions
-                        appSites = meta.appSites
-                    } else if let legacy = try? decoder.decode([Distraction].self, from: jsonData) {
-                        distractions = legacy
-                    }
-                }
-
-                // Create TimelineCard instance using renamed columns
-                return TimelineCard(
-                    batchId: row["batch_id"],
-                    startTimestamp: row["start"] ?? "",
-                    endTimestamp: row["end"] ?? "",
-                    category: row["category"],
-                    subcategory: row["subcategory"],
-                    title: row["title"],
-                    summary: row["summary"],
-                    detailedSummary: row["detailed_summary"],
-                    day: row["day"],
-                    distractions: distractions,
-                    videoSummaryURL: row["video_summary_url"],
-                    otherVideoSummaryURLs: nil,
-                    appSites: appSites
-                )
+                buildTimelineCard(from: row, decoder: decoder)
             }
         }
-        let result = cards ?? []
-        return result
+        return cards ?? []
     }
 
     func fetchRecentTimelineCardsForDebug(limit: Int) -> [TimelineCardDebugEntry] {
@@ -1170,18 +1125,9 @@ final class StorageManager: StorageManaging, @unchecked Sendable {
                 WHERE id = ?
                   AND is_deleted = 0
             """, arguments: [id]) else { return nil }
-            
-            // Decode distractions from metadata JSON
-            var distractions: [Distraction]? = nil
-            if let metadataString: String = row["metadata"],
-               let jsonData = metadataString.data(using: .utf8) {
-                if let meta = try? decoder.decode(TimelineMetadata.self, from: jsonData) {
-                    distractions = meta.distractions
-                } else if let legacy = try? decoder.decode([Distraction].self, from: jsonData) {
-                    distractions = legacy
-                }
-            }
-            
+
+            let (distractions, _) = decodeMetadata(from: row, using: decoder)
+
             return TimelineCardWithTimestamps(
                 id: id,
                 startTimestamp: row["start"] ?? "",
