@@ -41,47 +41,6 @@ final class GeminiDirectProvider: LLMProvider {
         self.modelPreference = preference
     }
 
-    private func categoriesSection(from descriptors: [LLMCategoryDescriptor]) -> String {
-        guard !descriptors.isEmpty else {
-            return "USER CATEGORIES: No categories configured. Use consistent labels based on the activity story."
-        }
-
-        let allowed = descriptors.map { "\"\($0.name)\"" }.joined(separator: ", ")
-        var lines: [String] = ["USER CATEGORIES (choose exactly one label):"]
-
-        for (index, descriptor) in descriptors.enumerated() {
-            var desc = descriptor.description?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if descriptor.isIdle && desc.isEmpty {
-                desc = "Use when the user is idle for most of this period."
-            }
-            let suffix = desc.isEmpty ? "" : " — \(desc)"
-            lines.append("\(index + 1). \"\(descriptor.name)\"\(suffix)")
-        }
-
-        if let idle = descriptors.first(where: { $0.isIdle }) {
-            lines.append("Only use \"\(idle.name)\" when the user is idle for more than half of the timeframe. Otherwise pick the closest non-idle label.")
-        }
-
-        lines.append("Return the category exactly as written. Allowed values: [\(allowed)].")
-        return lines.joined(separator: "\n")
-    }
-
-    private func normalizeCategory(_ raw: String, descriptors: [LLMCategoryDescriptor]) -> String {
-        let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty else { return descriptors.first?.name ?? "" }
-        let normalized = cleaned.lowercased()
-        if let match = descriptors.first(where: { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized }) {
-            return match.name
-        }
-        if let idle = descriptors.first(where: { $0.isIdle }) {
-            let idleLabels = ["idle", "idle time", idle.name.lowercased()]
-            if idleLabels.contains(normalized) {
-                return idle.name
-            }
-        }
-        return descriptors.first?.name ?? cleaned
-    }
-
     private func normalizeCards(_ cards: [ActivityCardData], descriptors: [LLMCategoryDescriptor]) -> [ActivityCardData] {
         cards.map { card in
             ActivityCardData(
@@ -658,7 +617,7 @@ final class GeminiDirectProvider: LLMProvider {
 
         \(promptSections.summary)
 
-        \(categoriesSection(from: context.categories))
+        \(formatCategoriesSection(from: context.categories))
 
         \(promptSections.detailedSummary)
 
@@ -1962,36 +1921,6 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
         return formatter.string(from: date)
     }
     
-    private func parseVideoTimestamp(_ timestamp: String) -> Int {
-        let components = timestamp.components(separatedBy: ":")
-        
-        if components.count == 2 {
-            // MM:SS format
-            let minutes = Int(components[0]) ?? 0
-            let seconds = Int(components[1]) ?? 0
-            return minutes * 60 + seconds
-        } else if components.count == 3 {
-            // HH:MM:SS format
-            let hours = Int(components[0]) ?? 0
-            let minutes = Int(components[1]) ?? 0
-            let seconds = Int(components[2]) ?? 0
-            return hours * 3600 + minutes * 60 + seconds
-        } else {
-            // Invalid format, return 0
-            print("Warning: Invalid video timestamp format: \(timestamp)")
-            return 0
-        }
-    }
-    
-    // Helper function to format timestamps
-    private func formatTimestampForPrompt(_ unixTime: Int) -> String {
-        let date = Date(timeIntervalSince1970: TimeInterval(unixTime))
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone.current
-        return formatter.string(from: date)
-    }
     
     
     private struct GeminiFileMetadata: Codable {

@@ -108,7 +108,7 @@ final class OllamaProvider: LLMProvider {
         )
         logs.append(firstLog)
         
-        let normalizedCategory = normalizeCategory(titleSummary.category, categories: context.categories)
+        let normalizedCategory = normalizeCategory(titleSummary.category, descriptors: context.categories)
 
         let initialCard = ActivityCardData(
             startTime: formatTimestampForPrompt(sortedObservations.first!.startTs),
@@ -638,23 +638,6 @@ final class OllamaProvider: LLMProvider {
         let confidence: Double
     }
 
-    private func normalizeCategory(_ raw: String, categories: [LLMCategoryDescriptor]) -> String {
-        let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty else { return categories.first?.name ?? "" }
-        let normalized = cleaned.lowercased()
-        if let match = categories.first(where: { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized }) {
-            return match.name
-        }
-        if let idle = categories.first(where: { $0.isIdle }) {
-            let idleLabels = ["idle", "idle time", idle.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()]
-            if idleLabels.contains(normalized) {
-                return idle.name
-            }
-        }
-        return categories.first?.name ?? cleaned
-    }
-
-
     private func generateSummary(observations: [Observation], categories: [LLMCategoryDescriptor], batchId: Int64?) async throws -> (SummaryResponse, String) {
         print("[DEBUG] generateSummary - Input observations:")
         for (i, obs) in observations.enumerated() {
@@ -1096,15 +1079,6 @@ final class OllamaProvider: LLMProvider {
             
             throw error
         }
-    }
-    
-    private func formatTimestampForPrompt(_ timestamp: Int) -> String {
-        let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone.current
-        return formatter.string(from: date)
     }
     
     private func calculateDurationInMinutes(from startTime: String, to endTime: String) -> Int {
