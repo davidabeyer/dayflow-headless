@@ -35,6 +35,153 @@ struct CLIResult {
     let exitCode: Int32
 }
 
+// MARK: - Shared Process Utilities
+
+struct ProcessEnvironmentBuilder {
+    static func buildEnvironment(overrides: [String: String]? = nil) -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        if let overrides = overrides {
+            environment.merge(overrides, uniquingKeysWith: { _, new in new })
+        }
+
+        var pathComponents: [String] = environment["PATH"]
+            .map { $0.split(separator: ":").map { String($0) } } ?? []
+        for rawPath in cliSearchPaths {
+            let expanded = (rawPath as NSString).expandingTildeInPath
+            if !pathComponents.contains(expanded) {
+                pathComponents.append(expanded)
+            }
+        }
+        environment["PATH"] = pathComponents.joined(separator: ":")
+        environment["HOME"] = environment["HOME"] ?? NSHomeDirectory()
+        return environment
+    }
+
+    static func configureProcess(_ process: Process, command: String, args: [String], env: [String: String]?, cwd: URL?) throws {
+        let expandedCommand = (command as NSString).expandingTildeInPath
+        if expandedCommand.hasPrefix("/") {
+            guard FileManager.default.isExecutableFile(atPath: expandedCommand) else {
+                throw NSError(domain: "StreamingCLI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Executable not found: \(expandedCommand)"])
+            }
+            process.executableURL = URL(fileURLWithPath: expandedCommand)
+            process.arguments = args
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = [expandedCommand] + args
+        }
+        process.currentDirectoryURL = cwd
+        process.environment = buildEnvironment(overrides: env)
+    }
+}
+
+// MARK: - UI Component Helpers
+
+struct SectionHeader: View {
+    let title: String
+    let subtitle: String?
+
+    init(_ title: String, subtitle: String? = nil) {
+        self.title = title
+        self.subtitle = subtitle
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.custom("Nunito", size: 24))
+                .fontWeight(.semibold)
+                .foregroundColor(.black.opacity(0.9))
+
+            if let subtitle = subtitle {
+                Text(subtitle)
+                    .font(.custom("Nunito", size: 14))
+                    .foregroundColor(.black.opacity(0.6))
+            }
+        }
+    }
+}
+
+struct NumberedListItem<Content: View>: View {
+    let number: String
+    let content: Content
+
+    init(_ number: String, @ViewBuilder content: () -> Content) {
+        self.number = number
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(number)
+                .font(.custom("Nunito", size: 14))
+                .foregroundColor(.black.opacity(0.6))
+                .frame(width: 20, alignment: .leading)
+
+            content
+        }
+    }
+}
+
+// MARK: - Button Style Helpers
+
+extension View {
+    func primaryActionButton() -> some View {
+        DayflowSurfaceButton(
+            action: {},
+            content: { self },
+            background: Color(red: 0.25, green: 0.17, blue: 0),
+            foreground: .white,
+            borderColor: .clear,
+            cornerRadius: 8,
+            horizontalPadding: 24,
+            verticalPadding: 12,
+            showOverlayStroke: true
+        )
+    }
+}
+
+func makePrimaryButton<Content: View>(action: @escaping () -> Void, @ViewBuilder content: () -> Content) -> some View {
+    DayflowSurfaceButton(
+        action: action,
+        content: content,
+        background: Color(red: 0.25, green: 0.17, blue: 0),
+        foreground: .white,
+        borderColor: .clear,
+        cornerRadius: 8,
+        horizontalPadding: 24,
+        verticalPadding: 12,
+        showOverlayStroke: true
+    )
+}
+
+func makeSecondaryButton<Content: View>(action: @escaping () -> Void, @ViewBuilder content: () -> Content) -> some View {
+    DayflowSurfaceButton(
+        action: action,
+        content: content,
+        background: .white.opacity(0.85),
+        foreground: Color(red: 0.25, green: 0.17, blue: 0),
+        borderColor: Color(red: 0.25, green: 0.17, blue: 0).opacity(0.35),
+        cornerRadius: 8,
+        horizontalPadding: 16,
+        verticalPadding: 8,
+        showOverlayStroke: true
+    )
+}
+
+func makeSmallActionButton<Content: View>(action: @escaping () -> Void, @ViewBuilder content: () -> Content) -> some View {
+    DayflowSurfaceButton(
+        action: action,
+        content: content,
+        background: Color(red: 0.25, green: 0.17, blue: 0),
+        foreground: .white,
+        borderColor: .clear,
+        cornerRadius: 8,
+        horizontalPadding: 16,
+        verticalPadding: 10,
+        showOverlayStroke: true
+    )
+}
+
 @discardableResult
 func runCLI(
     _ command: String,
@@ -43,47 +190,19 @@ func runCLI(
     cwd: URL? = nil
 ) throws -> CLIResult {
     let process = Process()
-    let expandedCommand = (command as NSString).expandingTildeInPath
-    if expandedCommand.hasPrefix("/") {
-        guard FileManager.default.isExecutableFile(atPath: expandedCommand) else {
-            throw NSError(domain: "StreamingCLI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Executable not found: \(expandedCommand)"])
-        }
-        process.executableURL = URL(fileURLWithPath: expandedCommand)
-        process.arguments = args
-    } else {
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [expandedCommand] + args
-    }
-    process.currentDirectoryURL = cwd
-    
-    var environment = ProcessInfo.processInfo.environment
-    if let overrides = env {
-        environment.merge(overrides, uniquingKeysWith: { _, new in new })
-    }
-    
-    var pathComponents: [String] = environment["PATH"]
-        .map { $0.split(separator: ":").map { String($0) } } ?? []
-    for rawPath in cliSearchPaths {
-        let expanded = (rawPath as NSString).expandingTildeInPath
-        if !pathComponents.contains(expanded) {
-            pathComponents.append(expanded)
-        }
-    }
-    environment["PATH"] = pathComponents.joined(separator: ":")
-    environment["HOME"] = environment["HOME"] ?? NSHomeDirectory()
-    process.environment = environment
-    
+    try ProcessEnvironmentBuilder.configureProcess(process, command: command, args: args, env: env, cwd: cwd)
+
     let stdoutPipe = Pipe()
     let stderrPipe = Pipe()
     process.standardOutput = stdoutPipe
     process.standardError = stderrPipe
-    
+
     try process.run()
     process.waitUntilExit()
-    
+
     let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
     let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-    
+
     return CLIResult(stdout: stdout, stderr: stderr, exitCode: process.terminationStatus)
 }
 
@@ -91,11 +210,11 @@ final class StreamingCLI {
     private var process: Process?
     private let stdoutPipe = Pipe()
     private let stderrPipe = Pipe()
-    
+
     func cancel() {
         process?.terminate()
     }
-    
+
     func run(
         command: String,
         args: [String],
@@ -107,43 +226,20 @@ final class StreamingCLI {
     ) {
         let proc = Process()
         process = proc
-        
-        let expandedCommand = (command as NSString).expandingTildeInPath
-        if expandedCommand.hasPrefix("/") {
-            guard FileManager.default.isExecutableFile(atPath: expandedCommand) else {
-                DispatchQueue.main.async {
-                    onStderr("Executable not found or not executable: \(expandedCommand)\n")
-                    onFinish(-1)
-                }
-                return
+
+        do {
+            try ProcessEnvironmentBuilder.configureProcess(proc, command: command, args: args, env: env, cwd: cwd)
+        } catch {
+            DispatchQueue.main.async {
+                onStderr("Failed to configure process: \(error.localizedDescription)\n")
+                onFinish(-1)
             }
-            proc.executableURL = URL(fileURLWithPath: expandedCommand)
-            proc.arguments = args
-        } else {
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            proc.arguments = [expandedCommand] + args
+            return
         }
-        proc.currentDirectoryURL = cwd
-        
-        var environment = ProcessInfo.processInfo.environment
-        if let overrides = env {
-            environment.merge(overrides, uniquingKeysWith: { _, new in new })
-        }
-        var pathComponents: [String] = environment["PATH"]
-            .map { $0.split(separator: ":").map { String($0) } } ?? []
-        for rawPath in cliSearchPaths {
-            let expanded = (rawPath as NSString).expandingTildeInPath
-            if !pathComponents.contains(expanded) {
-                pathComponents.append(expanded)
-            }
-        }
-        environment["PATH"] = pathComponents.joined(separator: ":")
-        environment["HOME"] = environment["HOME"] ?? NSHomeDirectory()
-        proc.environment = environment
-        
+
         proc.standardOutput = stdoutPipe
         proc.standardError = stderrPipe
-        
+
         stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
@@ -151,7 +247,7 @@ final class StreamingCLI {
                 onStdout(chunk)
             }
         }
-        
+
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
@@ -159,7 +255,7 @@ final class StreamingCLI {
                 onStderr(chunk)
             }
         }
-        
+
         do {
             try proc.run()
             proc.terminationHandler = { process in
@@ -287,41 +383,21 @@ struct LLMProviderSetupView: View {
     @ViewBuilder
     private var nextButton: some View {
         if setupState.isLastStep {
-            DayflowSurfaceButton(
-                action: { saveConfiguration(); onComplete() },
-                content: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "checkmark.circle.fill").font(.system(size: 14))
-                        Text("Complete Setup").font(.custom("Nunito", size: 14)).fontWeight(.semibold)
-                    }
-                },
-                background: Color(red: 0.25, green: 0.17, blue: 0),
-                foreground: .white,
-                borderColor: .clear,
-                cornerRadius: 8,
-                horizontalPadding: 24,
-                verticalPadding: 12,
-                showOverlayStroke: true
-            )
+            makePrimaryButton(action: { saveConfiguration(); onComplete() }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill").font(.system(size: 14))
+                    Text("Complete Setup").font(.custom("Nunito", size: 14)).fontWeight(.semibold)
+                }
+            }
         } else {
-            DayflowSurfaceButton(
-                action: handleContinue,
-                content: {
-                    HStack(spacing: 6) {
-                        Text(nextButtonText).font(.custom("Nunito", size: 14)).fontWeight(.semibold)
-                        if nextButtonText == "Next" {
-                            Image(systemName: "chevron.right").font(.system(size: 12, weight: .medium))
-                        }
+            makePrimaryButton(action: handleContinue) {
+                HStack(spacing: 6) {
+                    Text(nextButtonText).font(.custom("Nunito", size: 14)).fontWeight(.semibold)
+                    if nextButtonText == "Next" {
+                        Image(systemName: "chevron.right").font(.system(size: 12, weight: .medium))
                     }
-                },
-                background: Color(red: 0.25, green: 0.17, blue: 0),
-                foreground: .white,
-                borderColor: .clear,
-                cornerRadius: 8,
-                horizontalPadding: 24,
-                verticalPadding: 12,
-                showOverlayStroke: true
-            )
+                }
+            }
             .disabled(!setupState.canContinue)
             .opacity(!setupState.canContinue ? 0.5 : 1.0)
         }
@@ -334,69 +410,45 @@ struct LLMProviderSetupView: View {
         switch step.contentType {
         case .localChoice:
             VStack(alignment: .leading, spacing: 20) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Choose your local AI engine")
-                        .font(.custom("Nunito", size: 24))
-                        .fontWeight(.semibold)
-                        .foregroundColor(.black.opacity(0.9))
-                    Text("We strongly recommend LM Studio for the best reliability. Ollama is also supported, but tends to have more connection and timeout issues.")
-                        .font(.custom("Nunito", size: 14))
-                        .foregroundColor(.black.opacity(0.6))
-                }
+                SectionHeader("Choose your local AI engine", subtitle: "We strongly recommend LM Studio for the best reliability. Ollama is also supported, but tends to have more connection and timeout issues.")
                 HStack(alignment: .center, spacing: 12) {
-                    DayflowSurfaceButton(
-                        action: { setupState.selectEngine(.lmstudio); openLMStudioDownload() },
-                        content: {
-                            AsyncImage(url: URL(string: "https://lmstudio.ai/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Flmstudio-app-logo.11b4d746.webp&w=96&q=75")) { phase in
-                                switch phase {
-                                case .success(let image): image.resizable().scaledToFit()
-                                case .failure(_): Image(systemName: "desktopcomputer").resizable().scaledToFit().foregroundColor(.white.opacity(0.6))
-                                case .empty: ProgressView().scaleEffect(0.7)
-                                @unknown default: EmptyView()
-                                }
+                    makePrimaryButton(action: { setupState.selectEngine(.lmstudio); openLMStudioDownload() }) {
+                        AsyncImage(url: URL(string: "https://lmstudio.ai/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Flmstudio-app-logo.11b4d746.webp&w=96&q=75")) { phase in
+                            switch phase {
+                            case .success(let image): image.resizable().scaledToFit()
+                            case .failure(_): Image(systemName: "desktopcomputer").resizable().scaledToFit().foregroundColor(.white.opacity(0.6))
+                            case .empty: ProgressView().scaleEffect(0.7)
+                            @unknown default: EmptyView()
                             }
-                            .frame(width: 18, height: 18)
-                            Text("Download LM Studio")
-                                .font(.custom("Nunito", size: 14))
-                                .fontWeight(.semibold)
-                        },
-                        background: Color(red: 0.25, green: 0.17, blue: 0),
-                        foreground: .white,
-                        borderColor: .clear,
-                        cornerRadius: 8,
-                        showOverlayStroke: true
-                    )
+                        }
+                        .frame(width: 18, height: 18)
+                        Text("Download LM Studio")
+                            .font(.custom("Nunito", size: 14))
+                            .fontWeight(.semibold)
+                    }
                     Text("or")
                         .font(.custom("Nunito", size: 13))
                         .foregroundColor(.black.opacity(0.5))
                         .padding(.horizontal, 4)
-                    DayflowSurfaceButton(
-                        action: { setupState.selectEngine(.ollama); openOllamaDownload() },
-                        content: {
-                            AsyncImage(url: URL(string: "https://ollama.com/public/ollama.png")) { phase in
-                                switch phase {
-                                case .success(let image):
-                                    image
-                                        .renderingMode(.template)
-                                        .resizable()
-                                        .scaledToFit()
-                                        .foregroundColor(.white)
-                                case .failure(_): Image(systemName: "shippingbox").resizable().scaledToFit().foregroundColor(.white.opacity(0.6))
-                                case .empty: ProgressView().scaleEffect(0.7)
-                                @unknown default: EmptyView()
-                                }
+                    makePrimaryButton(action: { setupState.selectEngine(.ollama); openOllamaDownload() }) {
+                        AsyncImage(url: URL(string: "https://ollama.com/public/ollama.png")) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image
+                                    .renderingMode(.template)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .foregroundColor(.white)
+                            case .failure(_): Image(systemName: "shippingbox").resizable().scaledToFit().foregroundColor(.white.opacity(0.6))
+                            case .empty: ProgressView().scaleEffect(0.7)
+                            @unknown default: EmptyView()
                             }
-                            .frame(width: 18, height: 18)
-                            Text("Download Ollama")
-                                .font(.custom("Nunito", size: 14))
-                                .fontWeight(.semibold)
-                        },
-                        background: Color(red: 0.25, green: 0.17, blue: 0),
-                        foreground: .white,
-                        borderColor: .clear,
-                        cornerRadius: 8,
-                        showOverlayStroke: true
-                    )
+                        }
+                        .frame(width: 18, height: 18)
+                        Text("Download Ollama")
+                            .font(.custom("Nunito", size: 14))
+                            .fontWeight(.semibold)
+                    }
                 }
                 Text("Already have a local server? Make sure it’s OpenAI-compatible. You can set a custom base URL in the next step.")
                     .font(.custom("Nunito", size: 13))
@@ -405,10 +457,7 @@ struct LLMProviderSetupView: View {
             }
         case .localModelInstall:
             VStack(alignment: .leading, spacing: 16) {
-                Text("Install Qwen 2.5 VLM")
-                    .font(.custom("Nunito", size: 24))
-                    .fontWeight(.semibold)
-                    .foregroundColor(.black.opacity(0.9))
+                SectionHeader("Install Qwen 2.5 VLM")
                 if setupState.localEngine == .ollama {
                     Text("After installing Ollama, run this in your terminal to download the model (≈3GB):")
                         .font(.custom("Nunito", size: 14))
@@ -424,22 +473,12 @@ struct LLMProviderSetupView: View {
                             .font(.custom("Nunito", size: 14))
                             .foregroundColor(.black.opacity(0.6))
 
-                        DayflowSurfaceButton(
-                            action: openLMStudioModelDownload,
-                            content: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "arrow.down.circle.fill").font(.system(size: 14))
-                                    Text("Download Qwen 2.5 VL in LM Studio").font(.custom("Nunito", size: 14)).fontWeight(.semibold)
-                                }
-                            },
-                            background: Color(red: 0.25, green: 0.17, blue: 0),
-                            foreground: .white,
-                            borderColor: .clear,
-                            cornerRadius: 8,
-                            horizontalPadding: 24,
-                            verticalPadding: 12,
-                            showOverlayStroke: true
-                        )
+                        makePrimaryButton(action: openLMStudioModelDownload) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "arrow.down.circle.fill").font(.system(size: 14))
+                                Text("Download Qwen 2.5 VL in LM Studio").font(.custom("Nunito", size: 14)).fontWeight(.semibold)
+                            }
+                        }
 
                         VStack(alignment: .leading, spacing: 6) {
                             Text("This will open LM Studio and prompt you to download the model (≈3GB).")
@@ -536,16 +575,7 @@ struct LLMProviderSetupView: View {
             
         case .modelDownload(let command):
             VStack(alignment: .leading, spacing: 24) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Download the AI model")
-                        .font(.custom("Nunito", size: 24))
-                        .fontWeight(.semibold)
-                        .foregroundColor(.black.opacity(0.9))
-                    
-                    Text("This model enables Dayflow to understand what's on your screen")
-                        .font(.custom("Nunito", size: 14))
-                        .foregroundColor(.black.opacity(0.6))
-                }
+                SectionHeader("Download the AI model", subtitle: "This model enables Dayflow to understand what's on your screen")
                 
                 TerminalCommandView(
                     title: "Run this command:",
@@ -671,24 +701,10 @@ struct LLMProviderSetupView: View {
             
         case .apiKeyInstructions:
             VStack(alignment: .leading, spacing: 24) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Get your Gemini API key")
-                        .font(.custom("Nunito", size: 24))
-                        .fontWeight(.semibold)
-                        .foregroundColor(.black.opacity(0.9))
-                    
-                    Text("Google's Gemini offers a generous free tier that should allow you to run Dayflow 24/7 for free - no credit card required")
-                        .font(.custom("Nunito", size: 14))
-                        .foregroundColor(.black.opacity(0.6))
-                }
+                SectionHeader("Get your Gemini API key", subtitle: "Google's Gemini offers a generous free tier that should allow you to run Dayflow 24/7 for free - no credit card required")
                 
                 VStack(alignment: .leading, spacing: 16) {
-                    HStack(alignment: .top, spacing: 12) {
-                        Text("1.")
-                            .font(.custom("Nunito", size: 14))
-                            .foregroundColor(.black.opacity(0.6))
-                            .frame(width: 20, alignment: .leading)
-                        
+                    NumberedListItem("1.") {
                         Group {
                             Text("Visit Google AI Studio ")
                                 .font(.custom("Nunito", size: 14))
@@ -701,24 +717,14 @@ struct LLMProviderSetupView: View {
                         .onTapGesture { openGoogleAIStudio() }
                         .pointingHandCursor()
                     }
-                    
-                    HStack(alignment: .top, spacing: 12) {
-                        Text("2.")
-                            .font(.custom("Nunito", size: 14))
-                            .foregroundColor(.black.opacity(0.6))
-                            .frame(width: 20, alignment: .leading)
-                        
+
+                    NumberedListItem("2.") {
                         Text("Click \"Get API key\" in the top right")
                             .font(.custom("Nunito", size: 14))
                             .foregroundColor(.black.opacity(0.8))
                     }
-                    
-                    HStack(alignment: .top, spacing: 12) {
-                        Text("3.")
-                            .font(.custom("Nunito", size: 14))
-                            .foregroundColor(.black.opacity(0.6))
-                            .frame(width: 20, alignment: .leading)
-                        
+
+                    NumberedListItem("3.") {
                         Text("Create a new API key and copy it")
                             .font(.custom("Nunito", size: 14))
                             .foregroundColor(.black.opacity(0.8))
@@ -728,22 +734,12 @@ struct LLMProviderSetupView: View {
                 
                 // Buttons row with Open Google AI Studio on left, Next on right
                 HStack {
-                    DayflowSurfaceButton(
-                        action: openGoogleAIStudio,
-                        content: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "safari").font(.system(size: 14))
-                                Text("Open Google AI Studio").font(.custom("Nunito", size: 14)).fontWeight(.semibold)
-                            }
-                        },
-                        background: Color(red: 0.25, green: 0.17, blue: 0),
-                        foreground: .white,
-                        borderColor: .clear,
-                        cornerRadius: 8,
-                        horizontalPadding: 24,
-                        verticalPadding: 12,
-                        showOverlayStroke: true
-                    )
+                    makePrimaryButton(action: openGoogleAIStudio) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "safari").font(.system(size: 14))
+                            Text("Open Google AI Studio").font(.custom("Nunito", size: 14)).fontWeight(.semibold)
+                        }
+                    }
                     Spacer()
                     nextButton
                 }
@@ -1100,91 +1096,78 @@ class ProviderSetupState: ObservableObject {
         }
     }
     
-    private func cliEnvironment(overrides: [String: String]? = nil) -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
-        var components = env["PATH"].map { $0.split(separator: ":").map { String($0) } } ?? []
-        for raw in CLIDetector.searchPaths {
-            let expanded = (raw as NSString).expandingTildeInPath
-            if !components.contains(expanded) {
-                components.append(expanded)
+    private func runCLIStream(
+        tool: CLITool,
+        streamer: StreamingCLI,
+        isRunning: inout Bool,
+        output: inout String
+    ) {
+        guard !isRunning else { return }
+        guard let path = CLIDetector.resolveExecutablePath(for: tool) else {
+            output = "\(tool.shortName) CLI not found."
+            return
+        }
+        let prompt = cliPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Say hello" : cliPrompt
+        output = "Running \(path) with prompt: \(prompt)\n\n"
+        isRunning = true
+
+        let args = tool == .codex ? ["exec", "--json", prompt] : ["--print", "--output-format", "json", prompt]
+
+        streamer.run(
+            command: path,
+            args: args,
+            env: ProcessEnvironmentBuilder.buildEnvironment(),
+            onStdout: { [weak self] chunk in
+                guard let self else { return }
+                if tool == .codex {
+                    self.codexStreamOutput.append(chunk)
+                } else {
+                    self.claudeStreamOutput.append(chunk)
+                }
+            },
+            onStderr: { [weak self] chunk in
+                guard let self else { return }
+                if tool == .codex {
+                    self.codexStreamOutput.append("\n[stderr] \(chunk)")
+                } else {
+                    self.claudeStreamOutput.append("\n[stderr] \(chunk)")
+                }
+            },
+            onFinish: { [weak self] code in
+                guard let self else { return }
+                if tool == .codex {
+                    self.codexStreamOutput.append("\n\nExited \(code)\n")
+                    self.isRunningCodexStream = false
+                } else {
+                    self.claudeStreamOutput.append("\n\nExited \(code)\n")
+                    self.isRunningClaudeStream = false
+                }
             }
-        }
-        env["PATH"] = components.joined(separator: ":")
-        env["HOME"] = env["HOME"] ?? NSHomeDirectory()
-        if let overrides = overrides {
-            env.merge(overrides, uniquingKeysWith: { _, new in new })
-        }
-        return env
+        )
     }
-    
+
+    private func cancelCLIStream(tool: CLITool, streamer: StreamingCLI, isRunning: inout Bool, output: inout String) {
+        streamer.cancel()
+        if isRunning {
+            output.append("\n\nCancelled.\n")
+        }
+        isRunning = false
+    }
+
     func runCodexStream() {
-        guard !isRunningCodexStream else { return }
-        guard let path = CLIDetector.resolveExecutablePath(for: .codex) else {
-            codexStreamOutput = "Codex CLI not found."
-            return
-        }
-        let prompt = cliPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Say hello" : cliPrompt
-        codexStreamOutput = "Running \(path) with prompt: \(prompt)\n\n"
-        isRunningCodexStream = true
-        codexStreamer.run(
-            command: path,
-            args: ["exec", "--json", prompt],
-            env: cliEnvironment(),
-            onStdout: { [weak self] chunk in
-                self?.codexStreamOutput.append(chunk)
-            },
-            onStderr: { [weak self] chunk in
-                self?.codexStreamOutput.append("\n[stderr] \(chunk)")
-            },
-            onFinish: { [weak self] code in
-                guard let self else { return }
-                self.codexStreamOutput.append("\n\nExited \(code)\n")
-                self.isRunningCodexStream = false
-            }
-        )
+        runCLIStream(tool: .codex, streamer: codexStreamer, isRunning: &isRunningCodexStream, output: &codexStreamOutput)
     }
-    
+
     func cancelCodexStream() {
-        codexStreamer.cancel()
-        if isRunningCodexStream {
-            codexStreamOutput.append("\n\nCancelled.\n")
-        }
-        isRunningCodexStream = false
+        cancelCLIStream(tool: .codex, streamer: codexStreamer, isRunning: &isRunningCodexStream, output: &codexStreamOutput)
     }
-    
+
     func runClaudeStream() {
-        guard !isRunningClaudeStream else { return }
-        guard let path = CLIDetector.resolveExecutablePath(for: .claude) else {
-            claudeStreamOutput = "Claude CLI not found."
-            return
-        }
-        let prompt = cliPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Say hello" : cliPrompt
-        claudeStreamOutput = "Running \(path) with prompt: \(prompt)\n\n"
-        isRunningClaudeStream = true
-        claudeStreamer.run(
-            command: path,
-            args: ["--print", "--output-format", "json", prompt],
-            env: cliEnvironment(),
-            onStdout: { [weak self] chunk in
-                self?.claudeStreamOutput.append(chunk)
-            },
-            onStderr: { [weak self] chunk in
-                self?.claudeStreamOutput.append("\n[stderr] \(chunk)")
-            },
-            onFinish: { [weak self] code in
-                guard let self else { return }
-                self.claudeStreamOutput.append("\n\nExited \(code)\n")
-                self.isRunningClaudeStream = false
-            }
-        )
+        runCLIStream(tool: .claude, streamer: claudeStreamer, isRunning: &isRunningClaudeStream, output: &claudeStreamOutput)
     }
-    
+
     func cancelClaudeStream() {
-        claudeStreamer.cancel()
-        if isRunningClaudeStream {
-            claudeStreamOutput.append("\n\nCancelled.\n")
-        }
-        isRunningClaudeStream = false
+        cancelCLIStream(tool: .claude, streamer: claudeStreamer, isRunning: &isRunningClaudeStream, output: &claudeStreamOutput)
     }
 }
 
@@ -1576,15 +1559,7 @@ struct ChatCLIDetectionStepView<NextButton: View>: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Check ChatGPT or Claude")
-                    .font(.custom("Nunito", size: 24))
-                    .fontWeight(.semibold)
-                    .foregroundColor(.black.opacity(0.9))
-                Text("Dayflow can talk to ChatGPT (via the Codex CLI) or Claude Code. You only need one installed and signed in on this Mac.")
-                    .font(.custom("Nunito", size: 14))
-                    .foregroundColor(.black.opacity(0.6))
-            }
+            SectionHeader("Check ChatGPT or Claude", subtitle: "Dayflow can talk to ChatGPT (via the Codex CLI) or Claude Code. You only need one installed and signed in on this Mac.")
             
             VStack(alignment: .leading, spacing: 14) {
                 ChatCLIToolStatusRow(
@@ -1625,56 +1600,36 @@ struct ChatCLIDetectionStepView<NextButton: View>: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.custom("Nunito", size: 13))
                 HStack(spacing: 12) {
-                    DayflowSurfaceButton(
-                        action: {
-                            if isRunningCodex {
-                                onCancelCodex()
-                            } else if codexStatus.isInstalled || codexReport?.resolvedPath != nil {
-                                onRunCodex()
-                            }
-                        },
-                        content: {
-                            HStack(spacing: 6) {
-                                Image(systemName: isRunningCodex ? "stop.fill" : "play.fill").font(.system(size: 12, weight: .semibold))
-                                Text(isRunningCodex ? "Stop Codex" : "Run Codex")
-                                    .font(.custom("Nunito", size: 13))
-                                    .fontWeight(.semibold)
-                            }
-                        },
-                        background: Color(red: 0.25, green: 0.17, blue: 0),
-                        foreground: .white,
-                        borderColor: .clear,
-                        cornerRadius: 8,
-                        horizontalPadding: 16,
-                        verticalPadding: 10,
-                        showOverlayStroke: true
-                    )
+                    makeSmallActionButton(action: {
+                        if isRunningCodex {
+                            onCancelCodex()
+                        } else if codexStatus.isInstalled || codexReport?.resolvedPath != nil {
+                            onRunCodex()
+                        }
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: isRunningCodex ? "stop.fill" : "play.fill").font(.system(size: 12, weight: .semibold))
+                            Text(isRunningCodex ? "Stop Codex" : "Run Codex")
+                                .font(.custom("Nunito", size: 13))
+                                .fontWeight(.semibold)
+                        }
+                    }
                     .disabled(!(codexStatus.isInstalled || codexReport?.resolvedPath != nil) && !isRunningCodex)
-                    
-                    DayflowSurfaceButton(
-                        action: {
-                            if isRunningClaude {
-                                onCancelClaude()
-                            } else if claudeStatus.isInstalled || claudeReport?.resolvedPath != nil {
-                                onRunClaude()
-                            }
-                        },
-                        content: {
-                            HStack(spacing: 6) {
-                                Image(systemName: isRunningClaude ? "stop.fill" : "play.fill").font(.system(size: 12, weight: .semibold))
-                                Text(isRunningClaude ? "Stop Claude" : "Run Claude")
-                                    .font(.custom("Nunito", size: 13))
-                                    .fontWeight(.semibold)
-                            }
-                        },
-                        background: Color(red: 0.25, green: 0.17, blue: 0),
-                        foreground: .white,
-                        borderColor: .clear,
-                        cornerRadius: 8,
-                        horizontalPadding: 16,
-                        verticalPadding: 10,
-                        showOverlayStroke: true
-                    )
+
+                    makeSmallActionButton(action: {
+                        if isRunningClaude {
+                            onCancelClaude()
+                        } else if claudeStatus.isInstalled || claudeReport?.resolvedPath != nil {
+                            onRunClaude()
+                        }
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: isRunningClaude ? "stop.fill" : "play.fill").font(.system(size: 12, weight: .semibold))
+                            Text(isRunningClaude ? "Stop Claude" : "Run Claude")
+                                .font(.custom("Nunito", size: 13))
+                                .fontWeight(.semibold)
+                        }
+                    }
                     .disabled(!(claudeStatus.isInstalled || claudeReport?.resolvedPath != nil) && !isRunningClaude)
                 }
                 if !codexOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1693,36 +1648,26 @@ struct ChatCLIDetectionStepView<NextButton: View>: View {
             )
             
             HStack {
-                DayflowSurfaceButton(
-                    action: {
-                        if !isChecking {
-                            onRetry()
+                makeSmallActionButton(action: {
+                    if !isChecking {
+                        onRetry()
+                    }
+                }) {
+                    HStack(spacing: 8) {
+                        if isChecking {
+                            ProgressView().scaleEffect(0.7)
+                        } else {
+                            Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .semibold))
                         }
-                    },
-                    content: {
-                        HStack(spacing: 8) {
-                            if isChecking {
-                                ProgressView().scaleEffect(0.7)
-                            } else {
-                                Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .semibold))
-                            }
-                            Text(isChecking ? "Checking…" : "Re-check")
-                                .font(.custom("Nunito", size: 14))
-                                .fontWeight(.semibold)
-                        }
-                    },
-                    background: accentColor,
-                    foreground: .white,
-                    borderColor: .clear,
-                    cornerRadius: 8,
-                    horizontalPadding: 20,
-                    verticalPadding: 10,
-                    showOverlayStroke: true
-                )
+                        Text(isChecking ? "Checking…" : "Re-check")
+                            .font(.custom("Nunito", size: 14))
+                            .fontWeight(.semibold)
+                    }
+                }
                 .disabled(isChecking)
-                
+
                 Spacer()
-                
+
                 nextButton()
                     .opacity(canContinue ? 1.0 : 0.5)
                     .allowsHitTesting(canContinue)
@@ -1812,24 +1757,14 @@ struct ChatCLIToolStatusRow: View {
             }
             
             if shouldShowInstallButton {
-                DayflowSurfaceButton(
-                    action: onInstall,
-                    content: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "arrow.down.circle.fill").font(.system(size: 13, weight: .semibold))
-                            Text(installLabel)
-                                .font(.custom("Nunito", size: 13))
-                                .fontWeight(.semibold)
-                        }
-                    },
-                    background: .white.opacity(0.85),
-                    foreground: accentColor,
-                    borderColor: accentColor.opacity(0.35),
-                    cornerRadius: 8,
-                    horizontalPadding: 16,
-                    verticalPadding: 8,
-                    showOverlayStroke: true
-                )
+                makeSecondaryButton(action: onInstall) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.down.circle.fill").font(.system(size: 13, weight: .semibold))
+                        Text(installLabel)
+                            .font(.custom("Nunito", size: 13))
+                            .fontWeight(.semibold)
+                    }
+                }
                 .padding(.leading, 48)
             }
         }
@@ -1951,28 +1886,18 @@ struct DebugCommandConsole: View {
                 TextField("Command", text: $command)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
-                DayflowSurfaceButton(
-                    action: runAction,
-                    content: {
-                        HStack(spacing: 6) {
-                            if isRunning {
-                                ProgressView().scaleEffect(0.7)
-                            } else {
-                                Image(systemName: "play.fill").font(.system(size: 12, weight: .semibold))
-                            }
-                            Text(isRunning ? "Running..." : "Run")
-                                .font(.custom("Nunito", size: 13))
-                                .fontWeight(.semibold)
+                makeSmallActionButton(action: runAction) {
+                    HStack(spacing: 6) {
+                        if isRunning {
+                            ProgressView().scaleEffect(0.7)
+                        } else {
+                            Image(systemName: "play.fill").font(.system(size: 12, weight: .semibold))
                         }
-                    },
-                    background: accentColor,
-                    foreground: .white,
-                    borderColor: .clear,
-                    cornerRadius: 8,
-                    horizontalPadding: 14,
-                    verticalPadding: 10,
-                    showOverlayStroke: true
-                )
+                        Text(isRunning ? "Running..." : "Run")
+                            .font(.custom("Nunito", size: 13))
+                            .fontWeight(.semibold)
+                    }
+                }
                 .disabled(isRunning)
             }
             ScrollView {
