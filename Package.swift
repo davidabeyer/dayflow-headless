@@ -37,6 +37,16 @@ let package = Package(
             name: "ConfigTests",
             dependencies: ["DayflowHeadless"],
             path: "Tests/ConfigTests"
+        ),
+        .testTarget(
+            name: "PermissionTests",
+            dependencies: ["DayflowHeadless"],
+            path: "Tests/PermissionTests"
+        ),
+        .testTarget(
+            name: "LaunchdTests",
+            dependencies: ["DayflowHeadless"],
+            path: "Tests/LaunchdTests"
         )
     ]
 )
