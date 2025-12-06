@@ -14,7 +14,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.5.0"),
-        .package(url: "https://github.com/getsentry/sentry-cocoa", from: "8.0.0")
+        .package(url: "https://github.com/getsentry/sentry-cocoa", from: "8.0.0"),
+        .package(url: "https://github.com/pointfreeco/swift-clocks", from: "1.0.0")
     ],
     targets: [
         // Main executable
@@ -22,7 +23,8 @@ let package = Package(
             name: "DayflowHeadless",
             dependencies: [
                 .product(name: "GRDB", package: "GRDB.swift"),
-                .product(name: "Sentry", package: "sentry-cocoa")
+                .product(name: "Sentry", package: "sentry-cocoa"),
+                .product(name: "Clocks", package: "swift-clocks")
             ],
             path: "Sources/DayflowHeadless"
         ),
@@ -40,7 +42,10 @@ let package = Package(
         ),
         .testTarget(
             name: "PermissionTests",
-            dependencies: ["DayflowHeadless"],
+            dependencies: [
+                "DayflowHeadless",
+                .product(name: "Clocks", package: "swift-clocks")
+            ],
             path: "Tests/PermissionTests"
         ),
         .testTarget(
