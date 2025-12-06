@@ -1,29 +1,23 @@
 import Foundation
 
-// MARK: - Signal Handling
-
-var coordinator: DaemonCoordinator?
-
-func handleSignal(_ signal: Int32) {
-    print("\nReceived signal \(signal), shutting down...")
-    coordinator?.shutdown()
-    exit(0)
-}
-
 // MARK: - Main Entry Point
 
 func main() {
     print("dayflow-headless starting...")
 
-    // Set up signal handlers for graceful shutdown
-    signal(SIGTERM, handleSignal)
-    signal(SIGINT, handleSignal)
+    // Create coordinator first
+    let coordinator = DaemonCoordinator()
 
-    // Create coordinator
-    coordinator = DaemonCoordinator()
+    // Set up async-signal-safe signal handler for graceful shutdown
+    let signalHandler = SignalHandler {
+        print("\nReceived shutdown signal, cleaning up...")
+        coordinator.shutdown()
+        exit(0)
+    }
+    signalHandler.start()
 
     // Check macOS version
-    if coordinator!.isRunningOnSequoia() {
+    if coordinator.isRunningOnSequoia() {
         print("⚠️  Warning: Running on macOS 15 (Sequoia)")
         print("   Screen Recording permission requires weekly re-authorization.")
         print("   See: docs/sequoia-notes.md for details.")
@@ -44,10 +38,12 @@ func main() {
     print("✓ Webhook URL: \(redactURL(config.webhook.url))")
 
     // Start recording
-    coordinator!.setRecording(true)
+    coordinator.setRecording(true)
     print("✓ Recording started at \(config.recording.fps) FPS (\(config.recording.resolution) resolution)")
 
     // Keep the daemon running
+    // Note: signalHandler is retained here to keep dispatch sources alive
+    _ = signalHandler
     print("\ndayflow-headless is running. Press Ctrl+C to stop.")
     RunLoop.main.run()
 }
