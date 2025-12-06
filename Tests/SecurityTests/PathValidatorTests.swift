@@ -66,4 +66,24 @@ final class PathValidatorTests: XCTestCase {
     func testRejectsNullByte() {
         XCTAssertFalse(PathValidator.isValidPath("/usr/bin/app\0malicious"))
     }
+
+    func testRejectsCarriageReturn() {
+        XCTAssertFalse(PathValidator.isValidPath("/usr/bin/app\rmalicious"))
+    }
+
+    func testRejectsDollarVariable() {
+        XCTAssertFalse(PathValidator.isValidPath("/usr/$HOME/bin"))
+    }
+
+    func testRejectsDoubleDotsAtStart() {
+        XCTAssertFalse(PathValidator.isValidPath("/../etc/passwd"))
+    }
+
+    func testRejectsDoubleDotsInMiddle() {
+        XCTAssertFalse(PathValidator.isValidPath("/usr/local/../../../etc/shadow"))
+    }
+
+    func testAcceptsHiddenFile() {
+        XCTAssertTrue(PathValidator.isValidPath("/Users/user/.config/app"))
+    }
 }

@@ -36,4 +36,29 @@ final class HeaderValidatorTests: XCTestCase {
         XCTAssertTrue(HeaderValidator.isValidValue("application/json"))
         XCTAssertTrue(HeaderValidator.isValidValue(""))  // Empty value is valid per RFC
     }
+
+    // MARK: - Additional Edge Cases
+
+    func testIsValidName_AcceptsTokenSpecialChars() {
+        XCTAssertTrue(HeaderValidator.isValidName("X-Custom-Header"))
+        XCTAssertTrue(HeaderValidator.isValidName("Content.Type"))
+        XCTAssertTrue(HeaderValidator.isValidName("X_Custom_Header"))
+    }
+
+    func testIsValidValue_RejectsSoloCR() {
+        XCTAssertFalse(HeaderValidator.isValidValue("value\rbad"))
+    }
+
+    func testIsValidValue_RejectsSoloLF() {
+        XCTAssertFalse(HeaderValidator.isValidValue("value\nbad"))
+    }
+
+    func testIsValidValue_RejectsNullByte() {
+        XCTAssertFalse(HeaderValidator.isValidValue("value\0bad"))
+    }
+
+    func testIsValidValue_AcceptsTab() {
+        // Tabs are allowed in header values per RFC 7230
+        XCTAssertTrue(HeaderValidator.isValidValue("value\twith\ttabs"))
+    }
 }

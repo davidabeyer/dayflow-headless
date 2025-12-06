@@ -66,4 +66,32 @@ final class URLValidatorTests: XCTestCase {
     func testRejectsURLWithoutHost() {
         XCTAssertFalse(URLValidator.isValidWebhookURL("https:///path"))
     }
+
+    // MARK: - Case Sensitivity
+
+    func testAcceptsUppercaseHTTPS() {
+        XCTAssertTrue(URLValidator.isValidWebhookURL("HTTPS://example.com/webhook"))
+    }
+
+    func testAcceptsMixedCaseScheme() {
+        XCTAssertTrue(URLValidator.isValidWebhookURL("HtTpS://example.com/webhook"))
+    }
+
+    // MARK: - Host Variations
+
+    func testAcceptsLocalhost() {
+        XCTAssertTrue(URLValidator.isValidWebhookURL("http://localhost:8080/webhook"))
+    }
+
+    func testAcceptsIPAddress() {
+        XCTAssertTrue(URLValidator.isValidWebhookURL("https://192.168.1.1/webhook"))
+    }
+
+    func testAcceptsIPv6Address() {
+        XCTAssertTrue(URLValidator.isValidWebhookURL("https://[::1]/webhook"))
+    }
+
+    func testRejectsSchemeOnly() {
+        XCTAssertFalse(URLValidator.isValidWebhookURL("https:"))
+    }
 }
