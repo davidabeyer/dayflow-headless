@@ -1,0 +1,27 @@
+{
+  "geminiApiKey": "YOUR_GEMINI_API_KEY_HERE",
+  "webhook": {
+    "url": "https://your-webhook-endpoint.com/dayflow",
+    "sendJson": true,
+    "sendMarkdown": true,
+    "headers": {
+      "Authorization": "Bearer YOUR_TOKEN_HERE"
+    },
+    "retryStrategy": {
+      "initialDelaySeconds": 5,
+      "maxDelaySeconds": 300,
+      "multiplier": 2,
+      "maxAttempts": 10
+    }
+  },
+  "recording": {
+    "fps": 1,
+    "resolution": "low"
+  },
+  "analysis": {
+    "batchIntervalMinutes": 15
+  },
+  "database": {
+    "walMode": true
+  }
+}
