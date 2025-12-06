@@ -35,9 +35,57 @@ public final class BatchQueue {
     }
 
     /// Retrieve and remove all queued payloads (FIFO order)
+    /// Uses atomic rename-based claim pattern to prevent race conditions
+    /// and duplicate processing in concurrent scenarios.
+    ///
+    /// Implementation uses POSIX rename(2) atomicity:
+    /// 1. Claim phase: Rename files with .claimed- prefix (atomic operation)
+    /// 2. Read phase: Read all claimed files
+    /// 3. Delete phase: Remove claimed files
+    ///
+    /// If another process claims a file first, we get fileNoSuchFile and skip.
     public func dequeueAll() throws -> [String] {
-        let payloads = try peek()
-        try clear()
+        let files = try getQueueFiles()
+        var claimed: [URL] = []
+        var payloads: [String] = []
+
+        // Phase 1: Claim files by renaming (ATOMIC via POSIX rename)
+        // moveItem() calls rename(2) which is atomic on same filesystem
+        for file in files {
+            let claimedPath = file.deletingLastPathComponent()
+                .appendingPathComponent(".claimed-\(UUID().uuidString)")
+            do {
+                try fileManager.moveItem(at: file, to: claimedPath)
+                claimed.append(claimedPath)
+            } catch CocoaError.fileNoSuchFile {
+                // Already claimed by another concurrent process, skip
+                continue
+            } catch {
+                // Log but continue with remaining files
+                print("Warning: Failed to claim \(file.lastPathComponent): \(error)")
+                continue
+            }
+        }
+
+        // Phase 2: Read claimed files
+        for file in claimed {
+            do {
+                payloads.append(try String(contentsOf: file, encoding: .utf8))
+            } catch CocoaError.fileNoSuchFile {
+                // File was deleted externally during claim window, skip
+                print("Warning: Claimed file was deleted externally: \(file.lastPathComponent)")
+                continue
+            } catch {
+                // Log but continue with remaining files
+                print("Warning: Failed to read claimed file: \(error)")
+            }
+        }
+
+        // Phase 3: Delete claimed files
+        for file in claimed {
+            try? fileManager.removeItem(at: file)
+        }
+
         return payloads
     }
 
@@ -61,14 +109,16 @@ public final class BatchQueue {
     }
 
     /// Get queue files sorted by timestamp (FIFO)
+    /// Excludes claimed files (those with .claimed- prefix)
     private func getQueueFiles() throws -> [URL] {
         let contents = try fileManager.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.creationDateKey],
-            options: [.skipsHiddenFiles]
+            options: []  // Don't skip hidden files so we can filter claimed ones explicitly
         )
 
         return contents
+            .filter { !$0.lastPathComponent.hasPrefix(".claimed-") }
             .filter { $0.pathExtension == "json" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
