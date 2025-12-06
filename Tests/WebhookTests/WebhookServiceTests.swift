@@ -182,4 +182,24 @@ final class WebhookServiceTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "X-Custom-Header"), "custom-value")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer token123")
     }
+
+    // MARK: - Header Validation Tests
+
+    func testSendThrowsOnInvalidHeader() async throws {
+        let config = WebhookConfig(
+            url: "https://example.com/webhook",
+            retryStrategy: RetryStrategy(),
+            headers: ["X-Injected": "value\r\nevil: header"]
+        )
+        webhookService = WebhookService(config: config, session: mockSession)
+
+        do {
+            _ = try await webhookService.send(payload: "Test")
+            XCTFail("Should throw error for invalid header")
+        } catch WebhookError.invalidHeader(let key) {
+            XCTAssertEqual(key, "X-Injected")
+        } catch {
+            XCTFail("Expected WebhookError.invalidHeader, got: \(error)")
+        }
+    }
 }

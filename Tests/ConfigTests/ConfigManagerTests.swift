@@ -76,4 +76,28 @@ final class ConfigManagerTests: XCTestCase {
         let config = try ConfigManager.load(from: testConfigPath)
         XCTAssertEqual(config.geminiApiKey, "env-override-key", "Environment variable should override config")
     }
+
+    // MARK: - Header Validation Tests
+
+    func testRejectsInvalidHeaderValue() throws {
+        let configWithCRLF = """
+        {
+            "geminiApiKey": "test-key",
+            "webhook": {
+                "url": "https://example.com/hook",
+                "headers": {
+                    "X-Custom": "value\\r\\nX-Injected: evil"
+                }
+            }
+        }
+        """
+        try configWithCRLF.write(to: testConfigPath, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try ConfigManager.load(from: testConfigPath)) { error in
+            guard case ConfigError.invalidHeaderValue(key: _) = error else {
+                XCTFail("Expected invalidHeaderValue error, got: \(error)")
+                return
+            }
+        }
+    }
 }

@@ -4,6 +4,8 @@ public enum ConfigError: Error, Equatable {
     case fileNotFound(String)
     case invalidJson
     case missingRequiredField(String)
+    case invalidHeaderName(String)
+    case invalidHeaderValue(key: String)
 }
 
 public final class ConfigManager {
@@ -24,6 +26,16 @@ public final class ConfigManager {
             config = try decoder.decode(Config.self, from: data)
         } catch {
             throw error
+        }
+
+        // Validate webhook headers
+        for (key, value) in config.webhook.headers {
+            guard HeaderValidator.isValidName(key) else {
+                throw ConfigError.invalidHeaderName(key)
+            }
+            guard HeaderValidator.isValidValue(value) else {
+                throw ConfigError.invalidHeaderValue(key: key)
+            }
         }
 
         // Check for environment variable override

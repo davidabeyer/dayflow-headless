@@ -2,6 +2,7 @@ import Foundation
 
 public enum WebhookError: Error {
     case invalidURL
+    case invalidHeader(key: String)
     case networkError(Error)
     case httpError(Int)
 }
@@ -38,8 +39,11 @@ public final class WebhookService {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        // Add custom headers from config
+        // Validate and add custom headers from config
         for (key, value) in config.headers {
+            guard HeaderValidator.isValidName(key), HeaderValidator.isValidValue(value) else {
+                throw WebhookError.invalidHeader(key: key)
+            }
             request.setValue(value, forHTTPHeaderField: key)
         }
         
