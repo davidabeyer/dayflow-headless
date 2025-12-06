@@ -7,7 +7,10 @@ public final class LaunchAgentInstaller {
     public static let label = "com.dayflow.headless"
 
     /// Generate plist data for the LaunchAgent
-    public static func generatePlist(executablePath: String = "/usr/local/bin/dayflow-headless") -> Data {
+    /// - Parameter executablePath: Path to the dayflow-headless executable
+    /// - Returns: XML plist data
+    /// - Throws: PropertyListSerialization errors if plist generation fails
+    public static func generatePlist(executablePath: String = "/usr/local/bin/dayflow-headless") throws -> Data {
         let plist: [String: Any] = [
             "Label": label,
             "ProgramArguments": [executablePath],
@@ -20,7 +23,7 @@ public final class LaunchAgentInstaller {
             ]
         ]
 
-        return try! PropertyListSerialization.data(
+        return try PropertyListSerialization.data(
             fromPropertyList: plist,
             format: .xml,
             options: 0
@@ -36,7 +39,7 @@ public final class LaunchAgentInstaller {
         try FileManager.default.createDirectory(at: launchAgentsDir, withIntermediateDirectories: true)
 
         let plistPath = launchAgentsDir.appendingPathComponent(plistName)
-        let data = generatePlist(executablePath: executablePath)
+        let data = try generatePlist(executablePath: executablePath)
         try data.write(to: plistPath)
 
         print("Installed: \(plistPath.path)")
