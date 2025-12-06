@@ -24,3 +24,4 @@ agents.md
 
 # Internal tools
 tools/
+.build/
