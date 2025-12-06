@@ -52,4 +52,39 @@ final class LaunchAgentInstallerTests: XCTestCase {
         let args = plist["ProgramArguments"] as? [String]
         XCTAssertEqual(args?[0], customPath, "Should use custom executable path")
     }
+
+    // MARK: - Path Validation Tests
+
+    func testGeneratePlistThrowsOnShellInjection() throws {
+        let maliciousPath = "/usr/bin/app; rm -rf /"
+
+        XCTAssertThrowsError(try LaunchAgentInstaller.generatePlist(executablePath: maliciousPath)) { error in
+            guard case LaunchAgentError.invalidPath = error else {
+                XCTFail("Expected LaunchAgentError.invalidPath, got: \(error)")
+                return
+            }
+        }
+    }
+
+    func testGeneratePlistThrowsOnCommandSubstitution() throws {
+        let maliciousPath = "/usr/bin/$(whoami)"
+
+        XCTAssertThrowsError(try LaunchAgentInstaller.generatePlist(executablePath: maliciousPath)) { error in
+            guard case LaunchAgentError.invalidPath = error else {
+                XCTFail("Expected LaunchAgentError.invalidPath, got: \(error)")
+                return
+            }
+        }
+    }
+
+    func testGeneratePlistThrowsOnPathTraversal() throws {
+        let traversalPath = "/usr/bin/../../../etc/passwd"
+
+        XCTAssertThrowsError(try LaunchAgentInstaller.generatePlist(executablePath: traversalPath)) { error in
+            guard case LaunchAgentError.invalidPath = error else {
+                XCTFail("Expected LaunchAgentError.invalidPath, got: \(error)")
+                return
+            }
+        }
+    }
 }

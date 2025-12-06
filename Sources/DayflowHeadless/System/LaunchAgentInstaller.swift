@@ -1,5 +1,10 @@
 import Foundation
 
+public enum LaunchAgentError: Error {
+    case invalidPath
+    case installationFailed(Error)
+}
+
 /// Generates and installs launchd plist for auto-start at login
 public final class LaunchAgentInstaller {
 
@@ -9,8 +14,14 @@ public final class LaunchAgentInstaller {
     /// Generate plist data for the LaunchAgent
     /// - Parameter executablePath: Path to the dayflow-headless executable
     /// - Returns: XML plist data
+    /// - Throws: LaunchAgentError.invalidPath if path contains shell metacharacters
     /// - Throws: PropertyListSerialization errors if plist generation fails
     public static func generatePlist(executablePath: String = "/usr/local/bin/dayflow-headless") throws -> Data {
+        // Validate path before using in ProgramArguments
+        guard PathValidator.isValidPath(executablePath) else {
+            throw LaunchAgentError.invalidPath
+        }
+
         let plist: [String: Any] = [
             "Label": label,
             "ProgramArguments": [executablePath],
