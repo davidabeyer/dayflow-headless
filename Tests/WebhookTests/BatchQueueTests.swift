@@ -113,16 +113,48 @@ final class BatchQueueTests: XCTestCase {
     
     func testFilesAreOrderedByTimestamp() throws {
         batchQueue = BatchQueue(directory: tempDirectory)
-        
+
         try batchQueue.enqueue(payload: "First")
         // Small delay to ensure different timestamps
         Thread.sleep(forTimeInterval: 0.01)
         try batchQueue.enqueue(payload: "Second")
         Thread.sleep(forTimeInterval: 0.01)
         try batchQueue.enqueue(payload: "Third")
-        
+
         let payloads = try batchQueue.dequeueAll()
-        
+
         XCTAssertEqual(payloads, ["First", "Second", "Third"])
+    }
+
+    /// Test: Enqueue uses UUID suffix in filename for collision prevention
+    func testEnqueueFilenameContainsUUIDSuffix() throws {
+        batchQueue = BatchQueue(directory: tempDirectory)
+
+        try batchQueue.enqueue(payload: "Test payload")
+
+        let files = try FileManager.default.contentsOfDirectory(at: tempDirectory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+        XCTAssertEqual(files.count, 1)
+
+        // Filename format should be: timestamp-UUID.json (e.g., "1234567890.123456-ABCD1234.json")
+        let filename = files[0].deletingPathExtension().lastPathComponent
+        let parts = filename.split(separator: "-")
+        XCTAssertEqual(parts.count, 2, "Filename should have timestamp-UUID format")
+        XCTAssertGreaterThanOrEqual(parts[1].count, 8, "UUID suffix should be at least 8 characters")
+    }
+
+    /// Test: Dequeue uses atomic claim pattern (no .claimed- files remain)
+    func testDequeueUsesAtomicClaimNoFilesRemain() throws {
+        batchQueue = BatchQueue(directory: tempDirectory)
+
+        try batchQueue.enqueue(payload: "Payload 1")
+        try batchQueue.enqueue(payload: "Payload 2")
+
+        let payloads = try batchQueue.dequeueAll()
+        XCTAssertEqual(payloads.count, 2)
+
+        // After dequeue, directory should be empty (no .claimed- or .json files)
+        let allFiles = try FileManager.default.contentsOfDirectory(at: tempDirectory, includingPropertiesForKeys: nil)
+        XCTAssertEqual(allFiles.count, 0, "No files should remain after dequeue")
     }
 }

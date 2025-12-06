@@ -39,9 +39,12 @@ final class DaemonCoordinatorTests: XCTestCase {
         wait(for: [expectation], timeout: 10)
     }
 
-    func testIsRunningOnSequoia() throws {
+    func testSequoiaDetectionReturnsCorrectValue() throws {
         let coordinator = DaemonCoordinator()
-        let result = coordinator.isRunningOnSequoia()
-        XCTAssertNotNil(result)
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        let expectedSequoia = version.majorVersion >= 15
+
+        XCTAssertEqual(coordinator.isRunningOnSequoia(), expectedSequoia,
+            "Should return true on macOS 15+, false otherwise")
     }
 }

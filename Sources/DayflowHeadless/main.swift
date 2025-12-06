@@ -41,7 +41,7 @@ func main() {
     }
 
     print("✓ Gemini API key configured")
-    print("✓ Webhook URL: \(config.webhook.url)")
+    print("✓ Webhook URL: \(redactURL(config.webhook.url))")
 
     // Start recording
     coordinator!.setRecording(true)
