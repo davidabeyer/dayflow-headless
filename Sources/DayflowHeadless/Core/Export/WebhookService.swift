@@ -2,6 +2,7 @@ import Foundation
 
 public enum WebhookError: Error {
     case invalidURL
+    case unsafeURL
     case invalidHeader(key: String)
     case networkError(Error)
     case httpError(Int)
@@ -34,7 +35,12 @@ public final class WebhookService {
         guard let url = URL(string: config.url), !config.url.isEmpty else {
             throw WebhookError.invalidURL
         }
-        
+
+        // Validate URL scheme and reject embedded credentials
+        guard URLValidator.isValidWebhookURL(config.url) else {
+            throw WebhookError.unsafeURL
+        }
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

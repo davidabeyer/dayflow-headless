@@ -202,4 +202,40 @@ final class WebhookServiceTests: XCTestCase {
             XCTFail("Expected WebhookError.invalidHeader, got: \(error)")
         }
     }
+
+    // MARK: - URL Validation Tests
+
+    func testSendThrowsOnFileSchemeURL() async throws {
+        let config = WebhookConfig(
+            url: "file:///etc/passwd",
+            retryStrategy: RetryStrategy()
+        )
+        webhookService = WebhookService(config: config, session: mockSession)
+
+        do {
+            _ = try await webhookService.send(payload: "Test")
+            XCTFail("Should throw error for file:// URL")
+        } catch WebhookError.unsafeURL {
+            // Expected
+        } catch {
+            XCTFail("Expected WebhookError.unsafeURL, got: \(error)")
+        }
+    }
+
+    func testSendThrowsOnURLWithCredentials() async throws {
+        let config = WebhookConfig(
+            url: "https://user:pass@example.com/webhook",
+            retryStrategy: RetryStrategy()
+        )
+        webhookService = WebhookService(config: config, session: mockSession)
+
+        do {
+            _ = try await webhookService.send(payload: "Test")
+            XCTFail("Should throw error for URL with credentials")
+        } catch WebhookError.unsafeURL {
+            // Expected
+        } catch {
+            XCTFail("Expected WebhookError.unsafeURL, got: \(error)")
+        }
+    }
 }
