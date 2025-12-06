@@ -47,6 +47,11 @@ let package = Package(
             name: "LaunchdTests",
             dependencies: ["DayflowHeadless"],
             path: "Tests/LaunchdTests"
+        ),
+        .testTarget(
+            name: "WebhookTests",
+            dependencies: ["DayflowHeadless"],
+            path: "Tests/WebhookTests"
         )
     ]
 )
