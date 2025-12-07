@@ -62,6 +62,11 @@ let package = Package(
             name: "SecurityTests",
             dependencies: ["DayflowHeadless"],
             path: "Tests/SecurityTests"
+        ),
+        .testTarget(
+            name: "IdleDetectionTests",
+            dependencies: ["DayflowHeadless"],
+            path: "Tests/IdleDetectionTests"
         )
     ]
 )
